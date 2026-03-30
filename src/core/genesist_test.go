@@ -653,7 +653,7 @@ func TestApplyGenesis_JSONContainsAllocations(t *testing.T) {
 	}
 
 	content := string(raw)
-	for _, key := range []string{`"address"`, `"balance_spx"`, `"total_allocated_spx"`} {
+	for _, key := range []string{`"address"`, `"balance_qtx"`, `"total_allocated_qtx"`} {
 		if !containsSubstring(content, key) {
 			t.Errorf("genesis_state.json missing key %s — allocations array is blank", key)
 		}

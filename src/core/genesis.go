@@ -81,8 +81,7 @@ func DefaultGenesisState() *GenesisState {
 // This means devnet, testnet, and mainnet all produce the same genesis hash
 // as long as these four fields stay constant.
 func GenesisStateFromChainParams(p *QuantixChainParameters) *GenesisState {
-	// These four fields are the only ones that feed into BuildBlock() →
-	// FinalizeHash(). They must never change across environments.
+	// Canonical defaults — used when p.GenesisConfig is nil or fields are zero.
 	const (
 		canonicalTimestamp  = int64(1732070400) // Nov 20 2024 00:00:00 UTC, frozen forever
 		canonicalDifficulty = int64(17179869184)
@@ -90,18 +89,35 @@ func GenesisStateFromChainParams(p *QuantixChainParameters) *GenesisState {
 	)
 	canonicalExtraData := []byte("Quantix Network Genesis Block - Decentralized Future")
 
+	// Apply GenesisConfig overrides when provided — allows tests and custom
+	// networks to supply different genesis parameters.
+	extraData := canonicalExtraData
+	difficulty := big.NewInt(canonicalDifficulty)
+	gasLimit := big.NewInt(canonicalGasLimit)
+
+	if cfg := p.GenesisConfig; cfg != nil {
+		if len(cfg.GenesisExtraData) > 0 {
+			extraData = cfg.GenesisExtraData
+		}
+		if cfg.InitialDifficulty != nil && cfg.InitialDifficulty.Sign() > 0 {
+			difficulty = new(big.Int).Set(cfg.InitialDifficulty)
+		}
+		if cfg.InitialGasLimit != nil && cfg.InitialGasLimit.Sign() > 0 {
+			gasLimit = new(big.Int).Set(cfg.InitialGasLimit)
+		}
+	}
+
 	return &GenesisState{
 		// These fields identify the chain but do NOT affect the block hash.
 		ChainID:   p.ChainID,
 		ChainName: p.ChainName,
 		Symbol:    p.Symbol,
 
-		// These fields feed into BuildBlock() and must be identical on every
-		// environment so the genesis hash is the same on devnet, testnet, mainnet.
+		// Canonical fields (overridable via GenesisConfig).
 		Timestamp:         canonicalTimestamp,
-		ExtraData:         canonicalExtraData,
-		InitialDifficulty: big.NewInt(canonicalDifficulty),
-		InitialGasLimit:   big.NewInt(canonicalGasLimit),
+		ExtraData:         extraData,
+		InitialDifficulty: difficulty,
+		InitialGasLimit:   gasLimit,
 		Nonce:             common.FormatNonce(1),
 
 		Allocations:       DefaultGenesisAllocations(),
@@ -202,13 +218,13 @@ func (gs *GenesisState) allocationsToTxList() []*types.Transaction {
 // from this vault to each allocation address via normal transactions.
 const GenesisVaultAddress = "0000000000000000000000000000000000000001"
 
-// BuildBlock builds a genesis block with NO allocation transactions in the body.
-// Coins are minted to GenesisVaultAddress via mintBlockReward when block 0 is
-// executed. Distribution happens in block 1.
+// BuildBlock builds a genesis block containing one funding transaction per
+// allocation. The transactions are derived from gs.Allocations so the block
+// body is non-empty and the TxsRoot is deterministic.
 func (gs *GenesisState) BuildBlock() *types.Block {
-	// Genesis block body is empty — no funding transactions here.
-	// The vault receives coins through mintBlockReward in executor.go.
-	body := types.NewBlockBody([]*types.Transaction{}, []*types.BlockHeader{})
+	// Convert allocations → funding transactions for the genesis body.
+	genesisTxs := gs.allocationsToTxList()
+	body := types.NewBlockBody(genesisTxs, []*types.BlockHeader{})
 	tempBlock := types.NewBlock(&types.BlockHeader{}, body)
 	txsRoot := tempBlock.CalculateTxsRoot()
 
