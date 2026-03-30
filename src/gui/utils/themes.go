@@ -44,23 +44,23 @@ func NewThemeManager() *ThemeManager {
 	}
 }
 
-// SphinxTheme defines a custom theme for the Quantix Wallet
-type SphinxTheme struct {
+// QuantixTheme defines a custom theme for the Quantix Wallet
+type QuantixTheme struct {
 	isDark bool
 }
 
-// NewSphinxLightTheme creates light theme
-func NewSphinxLightTheme() fyne.Theme {
-	return &SphinxTheme{isDark: false}
+// NewQuantixLightTheme creates light theme
+func NewQuantixLightTheme() fyne.Theme {
+	return &QuantixTheme{isDark: false}
 }
 
-// NewSphinxDarkTheme creates dark theme
-func NewSphinxDarkTheme() fyne.Theme {
-	return &SphinxTheme{isDark: true}
+// NewQuantixDarkTheme creates dark theme
+func NewQuantixDarkTheme() fyne.Theme {
+	return &QuantixTheme{isDark: true}
 }
 
 // Color returns theme colors
-func (t *SphinxTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
+func (t *QuantixTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
 	if t.isDark {
 		return t.darkColor(name)
 	}
@@ -68,7 +68,7 @@ func (t *SphinxTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color
 }
 
 // lightColor returns light theme colors
-func (t *SphinxTheme) lightColor(name fyne.ThemeColorName) color.Color {
+func (t *QuantixTheme) lightColor(name fyne.ThemeColorName) color.Color {
 	switch name {
 	case theme.ColorNamePrimary:
 		return color.NRGBA{R: 59, G: 130, B: 246, A: 255} // Blue-500
@@ -90,7 +90,7 @@ func (t *SphinxTheme) lightColor(name fyne.ThemeColorName) color.Color {
 }
 
 // darkColor returns dark theme colors
-func (t *SphinxTheme) darkColor(name fyne.ThemeColorName) color.Color {
+func (t *QuantixTheme) darkColor(name fyne.ThemeColorName) color.Color {
 	switch name {
 	case theme.ColorNamePrimary:
 		return color.NRGBA{R: 96, G: 165, B: 250, A: 255} // Blue-300
@@ -112,17 +112,17 @@ func (t *SphinxTheme) darkColor(name fyne.ThemeColorName) color.Color {
 }
 
 // Font returns custom fonts
-func (t *SphinxTheme) Font(style fyne.TextStyle) fyne.Resource {
+func (t *QuantixTheme) Font(style fyne.TextStyle) fyne.Resource {
 	return theme.DefaultTheme().Font(style)
 }
 
 // Icon returns custom icons
-func (t *SphinxTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+func (t *QuantixTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
 	return theme.DefaultTheme().Icon(name)
 }
 
 // Size returns custom sizes
-func (t *SphinxTheme) Size(name fyne.ThemeSizeName) float32 {
+func (t *QuantixTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNamePadding:
 		return 12

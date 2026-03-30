@@ -45,12 +45,12 @@ func (op OpCode) IsPush() bool {
 // ExecuteOp processes an operation based on the given opcode (OpCode).
 func ExecuteOp(op OpCode, a, b uint64, n uint) uint64 {
 	switch op {
-	case SphinxHash:
+	case QuantixHash:
 		// Convert inputs to byte slices and call spxhash logic
 		data := make([]byte, 8)
 		binary.LittleEndian.PutUint64(data, a)
 		sphinx := spxhash.NewSphinxHash(256, data)
-		hash := sphinx.GetHash(data)
+		hash := quantix.GetHash(data)
 		// Return first 64 bits of the hash
 		return binary.LittleEndian.Uint64(hash[:8])
 	case Xor:
@@ -73,8 +73,8 @@ func ExecuteOp(op OpCode, a, b uint64, n uint) uint64 {
 }
 
 const (
-	// SphinxHash represents a hashing operation in the SVM.
-	SphinxHash OpCode = 0x10
+	// QuantixHash represents a hashing operation in the SVM.
+	QuantixHash OpCode = 0x10
 
 	// Adding new opcodes for hashing functions
 	SHA3_256      OpCode = 0x11
@@ -103,7 +103,7 @@ const (
 
 // stringToOp maps string representations of opcodes to their OpCode values.
 var stringToOp = map[string]OpCode{
-	"SphinxHash":              SphinxHash,
+	"QuantixHash":              QuantixHash,
 	"SHA3_256":                SHA3_256,
 	"SHA512_224":              SHA512_224,
 	"SHA512_256":              SHA512_256,

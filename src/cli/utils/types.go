@@ -58,7 +58,7 @@ type ChainIdentificationJSON struct {
 	Timestamp string `json:"timestamp"`
 
 	// ChainParams contains the core blockchain parameters (chain ID, name, magic number, etc.)
-	// Changed from commit.SphinxChainParams to *commit.ChainParameters to fix type compatibility
+	// Changed from commit.QuantixChainParams to *commit.ChainParameters to fix type compatibility
 	ChainParams *commit.ChainParameters `json:"chain_parameters"`
 
 	// TokenInfo contains details about the native token (QTX) including name, symbol, decimals, total supply

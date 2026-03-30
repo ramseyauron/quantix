@@ -107,7 +107,7 @@ func NewBlockchain(dataDir string, nodeID string, validators []string, networkTy
 	case "devnet":
 		chainParams = GetDevnetChainParams() // Development network parameters
 	default:
-		chainParams = GetSphinxChainParams() // Mainnet parameters (default)
+		chainParams = GetQuantixChainParams() // Mainnet parameters (default)
 	}
 	// Store early so createGenesisBlock can read bc.chainParams immediately
 	blockchain.chainParams = chainParams
@@ -632,9 +632,9 @@ func (bc *Blockchain) GetChainInfo() map[string]interface{} {
 	}
 }
 
-// IsSphinxChain validates if this blockchain follows Quantix protocol using actual genesis hash
+// IsQuantixChain validates if this blockchain follows Quantix protocol using actual genesis hash
 // Returns: true if chain follows Quantix protocol, false otherwise
-func (bc *Blockchain) IsSphinxChain() bool {
+func (bc *Blockchain) IsQuantixChain() bool {
 	// Check if chain has any blocks
 	if len(bc.chain) == 0 {
 		return false
@@ -662,7 +662,7 @@ func (bc *Blockchain) GenerateLedgerHeaders(operation string, amount float64, ad
 
 	// Return formatted string with Ledger-specific formatting
 	return fmt.Sprintf(
-		"=== SPHINX LEDGER OPERATION ===\n"+
+		"=== QUANTIX LEDGER OPERATION ===\n"+
 			"Chain: %s\n"+
 			"Chain ID: %d\n"+
 			"Operation: %s\n"+
@@ -1922,7 +1922,7 @@ func (bc *Blockchain) initializeChain() error {
 func (bc *Blockchain) createGenesisBlock() error {
 	if bc.chainParams == nil {
 		logger.Warn("chainParams nil during genesis creation, falling back to mainnet params")
-		bc.chainParams = GetSphinxChainParams()
+		bc.chainParams = GetQuantixChainParams()
 	}
 
 	// Log which environment we're actually creating genesis for

@@ -138,7 +138,7 @@ func (k *KeystoreConfig) GenerateLedgerHeaders(operation string, amount float64,
 	}
 
 	return fmt.Sprintf(
-		"=== SPHINX LEDGER OPERATION ===\n"+
+		"=== QUANTIX LEDGER OPERATION ===\n"+
 			"Chain: %s\n"+
 			"Chain ID: %d\n"+
 			"Operation: %s\n"+
@@ -168,7 +168,7 @@ func (k *KeystoreConfig) GenerateTrezorHeaders(operation string, amount float64,
 	}
 
 	return fmt.Sprintf(
-		"=== SPHINX TREZOR OPERATION ===\n"+
+		"=== QUANTIX TREZOR OPERATION ===\n"+
 			"Chain: %s\n"+
 			"Chain ID: %d\n"+
 			"Operation: %s\n"+
@@ -198,7 +198,7 @@ func (k *KeystoreConfig) GenerateDiskHeaders(operation string, amount float64, a
 	}
 
 	return fmt.Sprintf(
-		"=== SPHINX DISK OPERATION ===\n"+
+		"=== QUANTIX DISK OPERATION ===\n"+
 			"Chain: %s\n"+
 			"Chain ID: %d\n"+
 			"Operation: %s\n"+

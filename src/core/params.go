@@ -62,9 +62,9 @@ func (m *MockChainParamsProvider) GetWalletDerivationPaths() map[string]string {
 	return keystoreConfig.GetWalletDerivationPaths()
 }
 
-// GetSphinxChainParams returns the mainnet parameters
+// GetQuantixChainParams returns the mainnet parameters
 // This is the primary function that defines all mainnet chain parameters
-func GetSphinxChainParams() *QuantixChainParameters {
+func GetQuantixChainParams() *QuantixChainParameters {
 	// Use the STANDARDIZED genesis hash that all nodes will use
 	// This ensures all nodes have the same genesis block
 	genesisHash := GetGenesisHash()
@@ -95,7 +95,7 @@ func GetSphinxChainParams() *QuantixChainParameters {
 		MaxTransactionSize: 100 * 1024,           // 100KB - maximum transaction size
 		TargetBlockSize:    1 * 1024 * 1024,      // 1MB - target block size for optimization
 		BlockGasLimit:      big.NewInt(10000000), // 10 million gas - maximum gas per block
-		// GetSphinxChainParams()
+		// GetQuantixChainParams()
 		BaseBlockReward: new(big.Int).Mul(big.NewInt(5), big.NewInt(1e18)), // 5 QTX = 5×10^18 nQTX
 
 		// Genesis-specific configuration - MUST MATCH genesisBlockDefinition
@@ -173,7 +173,7 @@ func GetDefaultPerformanceConfig() *PerformanceConfig {
 // Chain continuity is preserved by locking GenesisHash to the devnet genesis
 // and incrementing only the ChainID and operational parameters.
 func GetTestnetChainParams() *QuantixChainParameters {
-	params := GetSphinxChainParams()
+	params := GetQuantixChainParams()
 
 	params.ChainName = "Quantix Testnet"
 	params.ChainID = 17331
@@ -199,9 +199,9 @@ func GetTestnetChainParams() *QuantixChainParameters {
 // The genesis block is identical across all environments; only operational
 // parameters (ports, gas limits, block times) change per environment.
 func GetMainnetChainParams() *QuantixChainParameters {
-	params := GetSphinxChainParams()
+	params := GetQuantixChainParams()
 
-	// GenesisHash is already set by GetSphinxChainParams → GetGenesisHash().
+	// GenesisHash is already set by GetQuantixChainParams → GetGenesisHash().
 	// No override needed — mainnet shares the same genesis ancestry.
 	return params
 }
@@ -209,7 +209,7 @@ func GetMainnetChainParams() *QuantixChainParameters {
 // GetDevnetChainParams returns development network parameters
 // Devnet is used for local development and debugging
 func GetDevnetChainParams() *QuantixChainParameters {
-	params := GetSphinxChainParams()
+	params := GetQuantixChainParams()
 
 	params.ChainName = "Quantix Devnet"
 	params.ChainID = 73310 // ← distinct from mainnet (7331)

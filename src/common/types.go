@@ -25,7 +25,7 @@ package common
 
 import spxhash "github.com/ramseyauron/quantix/src/spxhash/hash"
 
-// Params represents the configuration for SphinxHash.
+// Params represents the configuration for QuantixHash.
 type Params struct {
 	BitSize int
 }
@@ -35,14 +35,14 @@ var spxParams = Params{
 	BitSize: 256,
 }
 
-// SpxHash hashes the given data using the SphinxHash algorithm with the predefined parameters.
+// SpxHash hashes the given data using the QuantixHash algorithm with the predefined parameters.
 func SpxHash(data []byte) []byte {
 	// Use the default params (256-bit configuration)
 	params := spxParams
 
-	// Create a new SphinxHash instance with the configured bit size
-	sphinxHash := spxhash.NewSphinxHash(params.BitSize, data)
+	// Create a new QuantixHash instance with the configured bit size
+	quantixHash := spxhash.NewSphinxHash(params.BitSize, data)
 
 	// Return the final hash for the data
-	return sphinxHash.GetHash(data)
+	return quantixHash.GetHash(data)
 }

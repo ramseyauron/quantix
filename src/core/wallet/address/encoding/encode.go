@@ -40,16 +40,16 @@ var (
 	ErrInvalidFormat = errors.New("invalid format: version and/or checksum bytes missing") // Error for missing version or checksum bytes
 )
 
-// pubKeyToHash hashes the public key twice using the SphinxHash algorithm
+// pubKeyToHash hashes the public key twice using the QuantixHash algorithm
 // First hash the public key using SpxHash, then hash the result again to generate the final hash
 func pubKeyToHash(pubKey []byte) []byte {
-	// Apply the SphinxHash algorithm twice to the public key
+	// Apply the QuantixHash algorithm twice to the public key
 	h1 := common.SpxHash(pubKey)
 	h2 := common.SpxHash(h1)
 	return h2 // Return the second hash as the result
 }
 
-// spxToSha applies SHA-512/224 hashing to the SphinxHash result
+// spxToSha applies SHA-512/224 hashing to the QuantixHash result
 // This is used to create a shorter, fixed-length hash from the public key hash
 func spxToSha(hashPubKey []byte) []byte {
 	// Initialize the SHA-512/224 hasher
@@ -97,7 +97,7 @@ func shaToBase58Check(shaPubKey []byte) string {
 // GenerateAddress generates an address from a public key
 // This function hashes the public key and applies the necessary encoding to generate a valid address
 func GenerateAddress(pubKey []byte) string {
-	// Hash the public key twice using the SphinxHash algorithm
+	// Hash the public key twice using the QuantixHash algorithm
 	hashedPubKey := pubKeyToHash(pubKey)
 
 	// Apply SHA-512/224 hashing to the result

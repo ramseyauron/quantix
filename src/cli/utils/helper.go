@@ -219,10 +219,10 @@ func CallConsensus(numNodes int) error {
 	var firstGenesisHash string    // Stores the genesis hash for comparison
 
 	// ========== BLOCKCHAIN IDENTIFICATION AND CONFIGURATION ==========
-	logger.Info("=== SPHINX BLOCKCHAIN IDENTIFICATION ===")
+	logger.Info("=== QUANTIX BLOCKCHAIN IDENTIFICATION ===")
 
 	// Retrieve and display mainnet chain parameters from commit package
-	chainParams := commit.SphinxChainParams()
+	chainParams := commit.QuantixChainParams()
 	logger.Info("Chain: %s", chainParams.ChainName)                                             // Display chain name (Mainnet/Testnet/Devnet)
 	logger.Info("Chain ID: %d", chainParams.ChainID)                                            // Display unique chain identifier
 	logger.Info("Symbol: %s", chainParams.Symbol)                                               // Display token symbol (QTX)
@@ -572,7 +572,7 @@ func CallConsensus(numNodes int) error {
 		signingServices[nodeID] = signingService
 
 		// Get the minimum stake from core chain parameters
-		coreChainParams := core.GetSphinxChainParams()
+		coreChainParams := core.GetQuantixChainParams()
 		minStakeAmount := coreChainParams.ConsensusConfig.MinStakeAmount
 
 		// Log minimum stake for verification
@@ -623,7 +623,7 @@ func CallConsensus(numNodes int) error {
 	logger.Info("=== REGISTERING ALL VALIDATORS ACROSS ALL NODES ===")
 
 	// Get chain parameters for stake configuration
-	coreChainParams := core.GetSphinxChainParams()
+	coreChainParams := core.GetQuantixChainParams()
 	minStakeAmount := coreChainParams.ConsensusConfig.MinStakeAmount
 	// Convert to QTX units for display
 	minQTX := new(big.Int).Div(minStakeAmount, big.NewInt(1e18)).Uint64()

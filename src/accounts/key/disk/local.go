@@ -394,7 +394,7 @@ func (ks *DiskKeyStore) saveKeyToDisk(keyPair *key.KeyPair) error { // Changed r
 func getDefaultDiskStoragePath() string { // Renamed from getDefaultHotStoragePath
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "./sphinx-disk-keystore" // Changed from "./sphinx-hot-keystore"
+		return "./quantix-disk-keystore" // Changed from "./quantix-hot-keystore"
 	}
-	return filepath.Join(homeDir, ".sphinx", "disk-keystore") // Changed from "hot-keystore"
+	return filepath.Join(homeDir, ".quantix", "disk-keystore") // Changed from "hot-keystore"
 }

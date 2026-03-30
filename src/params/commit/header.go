@@ -149,7 +149,7 @@ func GenerateGenesisInfo() string {
 	genesisTime := time.Unix(params.GenesisTime, 0)
 
 	return fmt.Sprintf(
-		"=== SPHINX GENESIS BLOCK ===\n"+
+		"=== QUANTIX GENESIS BLOCK ===\n"+
 			"Chain: %s\n"+
 			"Chain ID: %d\n"+
 			"Genesis Time: %s\n"+
@@ -219,7 +219,7 @@ func GenerateForkHeader(forkName string) string {
 	}
 
 	return fmt.Sprintf(
-		"=== SPHINX SOFT FORK ===\n"+
+		"=== QUANTIX SOFT FORK ===\n"+
 			"Fork: %s\n"+
 			"Activation Bit: %d\n"+
 			"Start Time: %s\n"+

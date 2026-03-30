@@ -370,7 +370,7 @@ func PrintTimeServiceInfo() {
 	timezoneInfo := GetSystemTimezoneInfo()
 	currentInfo := ts.GetCurrentTimeInfo()
 
-	fmt.Println("=== SPHINX Time Service ===")
+	fmt.Println("=== QUANTIX Time Service ===")
 	fmt.Printf("Timezone: %s (%s)\n", timezoneInfo["timezone_name"], timezoneInfo["timezone_abbr"])
 	fmt.Printf("UTC Offset: %s\n", timezoneInfo["utc_offset"])
 	fmt.Printf("Daylight Saving: %s\n", timezoneInfo["is_dst"])
