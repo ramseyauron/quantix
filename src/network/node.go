@@ -38,12 +38,12 @@ import (
 
 // Add chain identification constants
 const (
-	SphinxChainID       = 7331       // Unique identifier for Quantix chain
-	SphinxChainName     = "Quantix"   // Human-readable chain name
-	SphinxSymbol        = "QTX"      // Currency symbol
-	SphinxBIP44CoinType = 7331       // BIP44 coin type for wallet derivation
-	SphinxMagicNumber   = 0x53504858 // Network magic bytes "SPHX" in hex
-	SphinxDefaultPort   = 32307      // Default P2P network port
+	QuantixChainID       = 7331       // Unique identifier for Quantix chain
+	QuantixChainName     = "Quantix"   // Human-readable chain name
+	QuantixSymbol        = "QTX"      // Currency symbol
+	QuantixBIP44CoinType = 7331       // BIP44 coin type for wallet derivation
+	QuantixMagicNumber   = 0x53504858 // Network magic bytes "SPHX" in hex
+	QuantixDefaultPort   = 32307      // Default P2P network port
 )
 
 // Add method to Node for chain identification
@@ -51,12 +51,12 @@ const (
 func (n *Node) GetChainInfo() map[string]interface{} {
 	// Return map with chain identification parameters
 	return map[string]interface{}{
-		"chain_id":        SphinxChainID,       // Unique chain identifier
-		"chain_name":      SphinxChainName,     // Human-readable chain name
-		"symbol":          SphinxSymbol,        // Currency symbol
-		"bip44_coin_type": SphinxBIP44CoinType, // BIP44 coin type for wallets
-		"magic_number":    SphinxMagicNumber,   // Network magic bytes
-		"default_port":    SphinxDefaultPort,   // Default P2P port
+		"chain_id":        QuantixChainID,       // Unique chain identifier
+		"chain_name":      QuantixChainName,     // Human-readable chain name
+		"symbol":          QuantixSymbol,        // Currency symbol
+		"bip44_coin_type": QuantixBIP44CoinType, // BIP44 coin type for wallets
+		"magic_number":    QuantixMagicNumber,   // Network magic bytes
+		"default_port":    QuantixDefaultPort,   // Default P2P port
 		"node_id":         n.ID,                // Node identifier
 		"node_role":       n.Role,              // Node role (validator, full node, etc.)
 	}
@@ -69,7 +69,7 @@ func (n *Node) GenerateChainHandshake() string {
 	chainInfo := n.GetChainInfo()
 	// Format handshake message with chain and node details
 	return fmt.Sprintf(
-		"SPHINX_HANDSHAKE\n"+
+		"QUANTIX_HANDSHAKE\n"+
 			"Chain: %s\n"+ // Chain name
 			"Chain ID: %d\n"+ // Chain identifier
 			"Node: %s\n"+ // Node ID

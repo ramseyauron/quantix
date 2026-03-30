@@ -59,7 +59,7 @@ func RunGUI() {
 	}
 
 	// Create app and window
-	myApp := app.NewWithID("com.sphinx.wallet")
+	myApp := app.NewWithID("com.quantix.wallet")
 	window := myApp.NewWindow("Quantix Wallet")
 	window.SetMaster()
 	window.Resize(fyne.NewSize(1400, 900))
@@ -72,9 +72,9 @@ func RunGUI() {
 	// Apply theme function
 	applyTheme := func(dark bool) {
 		if dark {
-			myApp.Settings().SetTheme(NewSphinxDarkTheme())
+			myApp.Settings().SetTheme(NewQuantixDarkTheme())
 		} else {
-			myApp.Settings().SetTheme(NewSphinxLightTheme())
+			myApp.Settings().SetTheme(NewQuantixLightTheme())
 		}
 		isDarkMode = dark
 		themeManager.isDarkMode = dark

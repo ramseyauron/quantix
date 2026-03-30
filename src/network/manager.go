@@ -64,7 +64,7 @@ func (nm *NodeManager) GenerateNodeIdentification(nodeID string) string {
 			"Network: %s\n"+ // Network name
 			"Chain ID: %d\n"+ // Chain identifier
 			"Protocol: %s\n"+ // Protocol version
-			"User Agent: SphinxNode/%s", // User agent string
+			"User Agent: QuantixNode/%s", // User agent string
 		nodeID,
 		chainInfo["chain_name"],
 		chainInfo["chain_id"],

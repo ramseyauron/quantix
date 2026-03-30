@@ -87,7 +87,7 @@ func generateMAC(note *Note, key string) (string, error) {
 	// Step 2: Convert the constructed message into a byte slice.
 	messageBytes := []byte(message)
 
-	// Step 3: Compute the hash of the message using the SphinxHash function.
+	// Step 3: Compute the hash of the message using the QuantixHash function.
 	hash := common.SpxHash(messageBytes)
 
 	// Step 4: Encode the hash into a hexadecimal string to make it human-readable.
@@ -136,7 +136,7 @@ func (n *Note) ToTxs(nonce uint64, gasLimit, gasPrice *big.Int) *Transaction {
 	return tx
 }
 
-// Hash computes the transaction ID using SphinxHash.
+// Hash computes the transaction ID using QuantixHash.
 func (tx *Transaction) Hash() string {
 	data, _ := json.Marshal(tx)
 	hash := common.SpxHash(data)

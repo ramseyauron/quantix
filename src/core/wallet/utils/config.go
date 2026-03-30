@@ -60,7 +60,7 @@ func NewWalletConfig() (*WalletConfig, error) {
 	}
 
 	// Open the LevelDB database for storing keys
-	db, err := leveldb.OpenFile(keystoreDir+"/sphinxkeys", nil)
+	db, err := leveldb.OpenFile(keystoreDir+"/quantixkeys", nil)
 	if err != nil {
 		log.Fatal("Failed to open LevelDB:", err) // Log and exit if database opening fails
 		return nil, fmt.Errorf("failed to open LevelDB: %v", err)

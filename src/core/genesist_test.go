@@ -193,7 +193,7 @@ func TestDefaultGenesisState_MainnetConstants(t *testing.T) {
 // ============================================================================
 
 func TestGenesisStateFromChainParams_Mainnet(t *testing.T) {
-	p := GetSphinxChainParams()
+	p := GetQuantixChainParams()
 	gs := GenesisStateFromChainParams(p)
 
 	if gs.ChainID != p.ChainID {
@@ -223,7 +223,7 @@ func TestGenesisStateFromChainParams_Devnet(t *testing.T) {
 }
 
 func TestGenesisStateFromChainParams_GenesisConfigOverrides(t *testing.T) {
-	p := GetSphinxChainParams()
+	p := GetQuantixChainParams()
 	customExtra := []byte("custom-extra-data-for-test")
 	customDiff := big.NewInt(999)
 	customGas := big.NewInt(12345)
@@ -856,7 +856,7 @@ func TestMerkleRootFromLeaves_Empty(t *testing.T) {
 }
 
 func TestMerkleRootFromLeaves_SingleLeaf(t *testing.T) {
-	leaf := []byte("hello-sphinx")
+	leaf := []byte("hello-quantix")
 	root := merkleRootFromLeaves([][]byte{leaf})
 	if len(root) == 0 {
 		t.Error("single-leaf Merkle root is empty")

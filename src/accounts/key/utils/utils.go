@@ -160,25 +160,25 @@ func GetRecommendedStorage() StorageType {
 func getDefaultDiskStoragePath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "./sphinx-disk-keystore"
+		return "./quantix-disk-keystore"
 	}
-	return filepath.Join(homeDir, ".sphinx", "disk-keystore")
+	return filepath.Join(homeDir, ".quantix", "disk-keystore")
 }
 
 func getDefaultBackupPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "./sphinx-backups"
+		return "./quantix-backups"
 	}
-	return filepath.Join(homeDir, ".sphinx", "backups")
+	return filepath.Join(homeDir, ".quantix", "backups")
 }
 
 func getDefaultConfigPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "./sphinx-config"
+		return "./quantix-config"
 	}
-	return filepath.Join(homeDir, ".sphinx", "config")
+	return filepath.Join(homeDir, ".quantix", "config")
 }
 
 func isProductionEnvironment() bool {
