@@ -31,8 +31,8 @@ import (
 	"strings"
 )
 
-const (
-	// DataDir is the unified data directory for all node data
+var (
+	// DataDir is the unified data directory for all node data; mutable so callers can override it.
 	DataDir = "data"
 )
 

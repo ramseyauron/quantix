@@ -91,13 +91,16 @@ func LaunchNetwork(mode string) error {
 
 // StartSingleNode starts a single node with the given configuration
 func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) error {
-	// since we're standardizing to use the common configuration
+	// Use the provided dataDir; fall back to common.DataDir if empty.
+	if dataDir != "" {
+		common.DataDir = dataDir
+	}
 	nodeDataDir := common.GetNodeDataDir(nodeConfig.Name)
 	if err := os.MkdirAll(nodeDataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory %s: %v", nodeDataDir, err)
 	}
 
-	// CHANGED: Use common.GetLevelDBPath for standardized LevelDB path
+	// Use common.GetLevelDBPath for standardized LevelDB path
 	db, err := leveldb.OpenFile(common.GetLevelDBPath(nodeConfig.Name), nil)
 	if err != nil {
 		return fmt.Errorf("failed to open LevelDB at %s: %v", nodeDataDir, err)
