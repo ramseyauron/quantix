@@ -100,10 +100,10 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		return fmt.Errorf("failed to create data directory %s: %v", nodeDataDir, err)
 	}
 
-	// Use common.GetLevelDBPath for standardized LevelDB path
+	// Open LevelDB once — shared with SphincsManager and SetupNodes
 	db, err := leveldb.OpenFile(common.GetLevelDBPath(nodeConfig.Name), nil)
 	if err != nil {
-		return fmt.Errorf("failed to open LevelDB at %s: %v", nodeDataDir, err)
+		return fmt.Errorf("failed to open LevelDB for %s: %v", nodeConfig.Name, err)
 	}
 	defer db.Close()
 
@@ -125,6 +125,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	setupConfig := NodeSetupConfig{
 		Name:      nodeConfig.Name,
 		Address:   nodeConfig.TCPAddr,
+		DB:        db,
 		UDPPort:   nodeConfig.UDPPort,
 		HTTPPort:  nodeConfig.HTTPPort,
 		WSPort:    nodeConfig.WSPort,
@@ -440,13 +441,17 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 			ReadyCh:   tcpReadyCh,
 		}
 
-		// CHANGED: Use common.GetLevelDBPath for standardized LevelDB path
-		db, err := leveldb.OpenFile(common.GetLevelDBPath(config.Name), nil)
-		if err != nil {
-			logger.Errorf("Failed to open LevelDB for %s: %v", config.Name, err)
-			return nil, fmt.Errorf("failed to open LevelDB for %s: %w", config.Name, err)
+		// Reuse pre-opened DB if provided (avoids double-lock), otherwise open fresh
+		if config.DB != nil {
+			dbs[i] = config.DB
+		} else {
+			openedDB, dbErr := leveldb.OpenFile(common.GetLevelDBPath(config.Name), nil)
+			if dbErr != nil {
+				logger.Errorf("Failed to open LevelDB for %s: %v", config.Name, dbErr)
+				return nil, fmt.Errorf("failed to open LevelDB for %s: %w", config.Name, dbErr)
+			}
+			dbs[i] = openedDB
 		}
-		dbs[i] = db
 
 		// Initialize p2p.Server with NodePortConfig, ensuring Node.ID is set
 		nodeConfig := network.NodePortConfig{
@@ -459,7 +464,7 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 			Role:      config.Role,
 			SeedNodes: config.SeedNodes,
 		}
-		p2pServers[i] = p2p.NewServer(nodeConfig, blockchains[i], db)
+		p2pServers[i] = p2p.NewServer(nodeConfig, blockchains[i], dbs[i])
 		localNode := p2pServers[i].LocalNode()
 		localNode.ID = config.Name
 		localNode.UpdateRole(config.Role)
