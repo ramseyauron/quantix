@@ -172,12 +172,11 @@ func (s *Storage) GetTotalBlocks() uint64 {
 // NewStorage creates a new storage instance with LevelDB support
 // dataDir is the node's base directory (e.g., "127.0.0.1:32307")
 func NewStorage(dataDir string) (*Storage, error) {
-	// Use common package to get correct paths with blockchain subdirectory
-	blocksDir := common.GetBlocksDir(dataDir) // .../blockchain/blocks
-	indexDir := common.GetIndexDir(dataDir)   // .../blockchain/index
-	stateDir := common.GetStateDir(dataDir)   // .../blockchain/state
-	// dbPath is not used yet - we'll open DB via SetDB later
-	// dbPath := common.GetLevelDBPath(dataDir)  // .../blockchain.db
+	// dataDir is already the full blockchain directory path (e.g. /data/Node-0/blockchain).
+	// Build sub-paths directly to avoid double-nesting from common.GetBlocksDir etc.
+	blocksDir := filepath.Join(dataDir, "blocks")
+	indexDir := filepath.Join(dataDir, "index")
+	stateDir := filepath.Join(dataDir, "state")
 
 	// Ensure all directories exist
 	if err := os.MkdirAll(blocksDir, 0755); err != nil {
@@ -481,7 +480,7 @@ func (s *Storage) SaveTPSMetrics() error {
 	// Get metrics directory path from common package
 	// Note: We need to get the node address from s.dataDir
 	// s.dataDir is the node address (e.g., "127.0.0.1:32307")
-	metricsDir := common.GetMetricsDir(s.dataDir)
+	metricsDir := filepath.Join(s.dataDir, "metrics")
 
 	// Ensure metrics directory exists
 	if err := os.MkdirAll(metricsDir, 0755); err != nil {
@@ -532,7 +531,7 @@ func (s *Storage) SaveTPSMetrics() error {
 // loadTPSMetrics loads TPS metrics from disk
 func (s *Storage) loadTPSMetrics() error {
 	// Get metrics directory path from common package
-	metricsDir := common.GetMetricsDir(s.dataDir)
+	metricsDir := filepath.Join(s.dataDir, "metrics")
 	tpsFile := filepath.Join(metricsDir, "tps_metrics.json")
 
 	// Check if file exists
