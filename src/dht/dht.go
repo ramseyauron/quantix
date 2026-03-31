@@ -34,7 +34,7 @@
 package dht
 
 import (
-	"math/rand"
+	"math/rand" // #nosec G404 — used only for non-security timing jitter
 	"net"
 	"strconv"
 	"time"

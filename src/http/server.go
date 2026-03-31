@@ -31,6 +31,9 @@ import (
 	"strconv"
 	"time"
 
+	"strings"
+	"sync"
+
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ramseyauron/quantix/src/core"
@@ -40,14 +43,63 @@ import (
 
 func NewServer(address string, messageCh chan *security.Message, blockchain *core.Blockchain, readyCh chan struct{}) *Server {
 	r := gin.Default()
+
+	// Basic rate limiting: max 100 requests/second per IP
+	var (
+		rateMu   sync.Mutex
+		rateMap  = make(map[string]int)
+	)
+	r.Use(func(c *gin.Context) {
+		ip := c.ClientIP()
+		rateMu.Lock()
+		rateMap[ip]++
+		count := rateMap[ip]
+		rateMu.Unlock()
+		if count > 100 {
+			c.AbortWithStatusJSON(429, gin.H{"error": "rate limit exceeded"})
+			return
+		}
+		c.Next()
+	})
+	// CORS — allow only localhost by default (override via config in production)
+	r.Use(func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		// Allow localhost origins for development; production should whitelist specific domains
+		allowed := origin == "" ||
+			strings.HasPrefix(origin, "http://localhost") ||
+			strings.HasPrefix(origin, "http://127.0.0.1")
+		if allowed {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Content-Type")
+		}
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
+
+	// Reset rate map every second
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+			rateMu.Lock()
+			rateMap = make(map[string]int)
+			rateMu.Unlock()
+		}
+	}()
 	s := &Server{
 		address:    address,
 		router:     r,
 		messageCh:  messageCh,
 		blockchain: blockchain,
 		httpServer: &http.Server{
-			Addr:    address,
-			Handler: r,
+			Addr:         address,
+			Handler:      r,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			IdleTimeout:  60 * time.Second,
 		},
 		readyCh: readyCh,
 	}
