@@ -60,8 +60,13 @@ func WriteJSONToFile(data interface{}, filename string) error {
 	return nil
 }
 
-// GetNodeIdentifier returns a unique node identifier from address
+// GetNodeIdentifier returns a unique node identifier from address.
+// If address already has the "Node-" prefix, it is returned as-is to avoid
+// double-prefixing (e.g. "Node-Node-0").
 func GetNodeIdentifier(address string) string {
+	if strings.HasPrefix(address, "Node-") {
+		return address
+	}
 	return fmt.Sprintf("Node-%s", address)
 }
 
