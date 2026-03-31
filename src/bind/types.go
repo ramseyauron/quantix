@@ -32,6 +32,7 @@ import (
 	"github.com/ramseyauron/quantix/src/p2p"
 	"github.com/ramseyauron/quantix/src/rpc"
 	"github.com/ramseyauron/quantix/src/transport"
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 // NodeConfig defines the configuration for a node’s TCP server.
@@ -46,13 +47,14 @@ type NodeConfig struct {
 
 // NodeSetupConfig defines the configuration for setting up a node’s servers.
 type NodeSetupConfig struct {
-	Address   string
-	Name      string
-	Role      network.NodeRole
-	HTTPPort  string
-	WSPort    string
-	UDPPort   string
-	SeedNodes []string
+	Address    string
+	Name       string
+	Role       network.NodeRole
+	HTTPPort   string
+	WSPort     string
+	UDPPort    string
+	SeedNodes  []string
+	DB         *leveldb.DB // optional: pre-opened LevelDB instance; SetupNodes will open its own if nil
 }
 
 // NodeResources holds the initialized resources for a node.
