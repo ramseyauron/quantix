@@ -25,7 +25,7 @@ package rpc
 
 import (
 	"hash"
-	"math/rand"
+	"math/rand" // #nosec G404 — used only for non-security session ID generation
 	"net"
 	"sync"
 	"time"

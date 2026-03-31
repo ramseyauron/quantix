@@ -36,6 +36,7 @@ package rpc
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"log"
 	"time"
 
 	"github.com/minio/highwayhash"
@@ -65,11 +66,11 @@ func To4KBatches(values [][]byte) [][][]byte {
 func NewKVStore() *KVStore {
 	highwayKey := make([]byte, 32)
 	if _, err := rand.Read(highwayKey); err != nil {
-		panic(err)
+		log.Fatalf("KVStore: failed to generate highway hash key: %v", err)
 	}
 	h, err := highwayhash.New(highwayKey)
 	if err != nil {
-		panic(err)
+		log.Fatalf("KVStore: failed to initialize highway hash: %v", err)
 	}
 	return &KVStore{
 		hash: h,
@@ -130,11 +131,13 @@ func (s *KVStore) GC() {
 func (s *KVStore) getChecksum(v []byte) checksum {
 	s.hash.Reset()
 	if _, err := s.hash.Write(v); err != nil {
-		panic(err)
+		log.Printf("KVStore: checksum write error: %v", err)
+		return checksum{}
 	}
 	c := s.hash.Sum(nil)
 	if len(c) != 32 {
-		panic("unexpected checksum length")
+		log.Printf("KVStore: unexpected checksum length %d", len(c))
+		return checksum{}
 	}
 	codec := binary.BigEndian
 	return checksum{
