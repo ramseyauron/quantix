@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/quantix-linux-amd64   .
+          GOOS=linux   GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/quantix-linux-arm64   .
+          GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/quantix-darwin-amd64  .
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum quantix-linux-amd64 quantix-linux-arm64 quantix-darwin-amd64 > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/quantix-linux-amd64
+            dist/quantix-linux-arm64
+            dist/quantix-darwin-amd64
+            dist/checksums.txt
+          generate_release_notes: true
