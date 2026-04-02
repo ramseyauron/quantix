@@ -76,6 +76,20 @@ func (vc *VDFCache) MarkVerified(epoch uint64, validatorID string) {
 	vc.verified[key] = true                         // Sets verification status to true
 }
 
+// Prune removes all cache entries for epochs older than minEpoch.
+// Call this after finalizing an epoch to prevent unbounded growth (F-24).
+func (vc *VDFCache) Prune(minEpoch uint64) {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	for key := range vc.verified {
+		// Key format: "epoch:validatorID"
+		var e uint64
+		if _, err := fmt.Sscanf(key, "%d:", &e); err == nil && e < minEpoch {
+			delete(vc.verified, key)
+		}
+	}
+}
+
 // vdfProvider abstracts the VDF implementation so it can be replaced in tests.
 type vdfProvider interface {
 	Eval(params VDFParams, x *big.Int) (y, proof *big.Int, err error) // Evaluates VDF and returns output and proof
@@ -637,6 +651,12 @@ func (r *RANDAO) FinaliseEpoch(epoch uint64, activeValidators []string) []string
 
 	// Mark epoch as finalized
 	r.epochFinalized[epoch] = true // Sets finalized flag
+
+	// F-24: Prune cache entries for epochs older than finality depth to prevent memory leak.
+	const finalityDepth = 10
+	if epoch >= finalityDepth {
+		r.cache.Prune(epoch - finalityDepth)
+	}
 
 	for _, id := range slashList { // Iterates through slashed validators
 		logger.Warn("⚠️  Validator %s did not submit VDF for epoch %d — slashing", id, epoch) // Logs slashing

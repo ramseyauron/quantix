@@ -358,8 +358,9 @@ func (b *Block) GenerateBlockHash() []byte {
 	// Create the final hash using the SpxHash algorithm
 	hashBytes := common.SpxHash(headerData)
 
-	// ALWAYS return hex-encoded hash to avoid non-printable characters
-	// Convert raw bytes to hex string for readability
+	// F-26: Block hash is stored and transmitted as a hex-encoded string (not raw bytes).
+	// This is an intentional design choice: hex strings are JSON-safe, log-safe, and
+	// human-readable. Callers should treat the returned []byte as a UTF-8 hex string.
 	hexHash := hex.EncodeToString(hashBytes)
 
 	// SPECIAL CASE: Only for genesis block (height 0), prefix with "GENESIS_"

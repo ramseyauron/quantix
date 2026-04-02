@@ -1498,7 +1498,10 @@ func (c *Consensus) commitBlock(block Block) {
 		c.nodeID, block.GetHash(), c.currentHeight)
 }
 
-// startViewChange initiates a view change process
+// startViewChange initiates a view change process.
+// Lock ordering (F-23): viewChangeMutex is always acquired before c.mu.
+// c.mu is released before any network I/O (broadcastTimeout) to avoid holding
+// it during blocking calls.
 func (c *Consensus) startViewChange() {
 	// Try to acquire view change lock
 	if !c.tryViewChangeLock() {
@@ -1506,39 +1509,45 @@ func (c *Consensus) startViewChange() {
 	}
 	defer c.viewChangeMutex.Unlock()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	var newView uint64
+	{
+		// Scope the mu lock to state mutation only; release before network I/O.
+		c.mu.Lock()
 
-	// Check conditions for view change
-	if c.phase != PhaseIdle {
-		return // Only change view in idle phase
+		// Check conditions for view change
+		if c.phase != PhaseIdle {
+			c.mu.Unlock()
+			return // Only change view in idle phase
+		}
+		if common.GetTimeService().Now().Sub(c.lastViewChange) < 60*time.Second {
+			c.mu.Unlock()
+			return // Rate limit view changes
+		}
+		if c.currentHeight > 0 && common.GetTimeService().Now().Sub(c.lastBlockTime) < 30*time.Second {
+			c.mu.Unlock()
+			return // Recent block committed, don't change view
+		}
+
+		// Get current validators
+		validators := c.getValidators()
+		if len(validators) == 0 {
+			logger.Warn("Skipping view change - no validators available")
+			c.mu.Unlock()
+			return
+		}
+
+		// Calculate new view number
+		newView = c.currentView + 1
+		logger.Info("🔄 Node %s initiating view change to view %d", c.nodeID, newView)
+
+		// Update consensus state
+		c.currentView = newView
+		c.lastViewChange = common.GetTimeService().Now()
+		c.resetConsensusState()
+		c.updateLeaderStatusWithValidators(validators)
+
+		c.mu.Unlock() // Release before network I/O below
 	}
-	if common.GetTimeService().Now().Sub(c.lastViewChange) < 60*time.Second {
-		return // Rate limit view changes
-	}
-	if c.currentHeight > 0 && common.GetTimeService().Now().Sub(c.lastBlockTime) < 30*time.Second {
-		return // Recent block committed, don't change view
-	}
-
-	// Get current validators
-	validators := c.getValidators()
-	if len(validators) == 0 {
-		logger.Warn("Skipping view change - no validators available")
-		c.mu.Unlock()
-		return
-	}
-
-	// Calculate new view number
-	newView := c.currentView + 1
-	logger.Info("🔄 Node %s initiating view change to view %d", c.nodeID, newView)
-
-	// Update consensus state
-	c.currentView = newView
-	c.lastViewChange = common.GetTimeService().Now()
-	c.resetConsensusState()
-	c.updateLeaderStatusWithValidators(validators)
-
-	c.mu.Unlock()
 
 	// Create and broadcast timeout message
 	timeoutMsg := &TimeoutMsg{

@@ -675,14 +675,15 @@ func (mp *Mempool) GetMemoryUsage() map[string]interface{} {
 		"available_bytes":     mp.config.MaxBytes - mp.currentBytes,
 		"utilization_percent": float64(mp.currentBytes) / float64(mp.config.MaxBytes) * 100,
 		"average_tx_size":     mp.calculateAverageTxSize(),
-		"estimated_max_txs":   mp.config.MaxBytes / mp.calculateAverageTxSize(),
+		"estimated_max_txs":   func() uint64 { avg := mp.calculateAverageTxSize(); if avg == 0 { return 0 }; return mp.config.MaxBytes / avg }(),
 	}
 }
 
-// calculateAverageTxSize calculates the average transaction size
+// calculateAverageTxSize calculates the average transaction size.
+// Returns a default of 256 bytes when the pool is empty to avoid division by zero.
 func (mp *Mempool) calculateAverageTxSize() uint64 {
 	if len(mp.allTransactions) == 0 {
-		return 0
+		return 256 // default estimate; prevents division by zero in callers
 	}
 	return mp.currentBytes / uint64(len(mp.allTransactions))
 }
