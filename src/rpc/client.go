@@ -77,7 +77,9 @@ func CallRPC(address, method string, params interface{}, nodeID NodeID, ttl uint
 		},
 		Values:    [][]byte{paramsData},
 		Iteration: 0,
-		Secret:    uint16(time.Now().UnixNano() % 65536),
+		// F-03: Secret is a [32]byte; leave as zero-value here since this
+		// client path does not participate in DHT message authentication.
+		Secret: [32]byte{},
 	}
 
 	// Serialize Message

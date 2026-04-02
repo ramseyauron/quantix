@@ -25,14 +25,12 @@ package p2p
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -94,39 +92,15 @@ func NewServer(config network.NodePortConfig, blockchain *core.Blockchain, db *l
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 
-	// Generate or use DHT secret for message authentication
-	var secret uint16
-
-	// Check if secret is provided in config
-	if config.DHTSecret != 0 {
-		secret = config.DHTSecret
-		log.Printf("Using DHT secret from config: %d", secret)
-	} else {
-		// Generate random 2-byte secret
-		secretBytes := make([]byte, 2)
-		if _, err := rand.Read(secretBytes); err != nil {
-			log.Fatalf("Failed to generate random secret for DHT: %v", err)
-		}
-		secret = binary.BigEndian.Uint16(secretBytes)
+	// F-03: DHT secret upgraded from uint16 (65 536 possible values, trivially
+	// brute-forceable) to a 256-bit crypto/rand token.  The uint16 config field
+	// (DHTSecret) is kept for backward-compatibility but ignored — all nodes now
+	// generate a fresh 32-byte secret at startup and share it out-of-band.
+	var secret [32]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		log.Fatalf("Failed to generate 256-bit DHT secret: %v", err)
 	}
-
-	// Allow override via environment variable for testing/development
-	if envSecret := os.Getenv("DHT_SECRET"); envSecret != "" {
-		if parsedSecret, err := strconv.ParseUint(envSecret, 10, 16); err == nil {
-			secret = uint16(parsedSecret)
-			log.Printf("Using DHT secret from environment variable: %d", secret)
-		} else {
-			log.Printf("Invalid DHT_SECRET environment variable: %v, generating random secret", err)
-			// Generate new random secret if env var is invalid
-			secretBytes := make([]byte, 2)
-			if _, err := rand.Read(secretBytes); err != nil {
-				log.Fatalf("Failed to generate random secret for DHT: %v", err)
-			}
-			secret = binary.BigEndian.Uint16(secretBytes)
-		}
-	} else {
-		log.Printf("No DHT_SECRET provided, using config secret: %d", secret)
-	}
+	log.Printf("Generated 256-bit DHT secret (first 4 bytes shown): %x...", secret[:4])
 
 	// Configure DHT with network parameters
 	dhtConfig := dht.Config{
