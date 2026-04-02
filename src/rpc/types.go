@@ -76,7 +76,10 @@ type Message struct {
 	Nodes     []Remote
 	Values    [][]byte
 	Iteration uint8
-	Secret    uint16
+	// Secret is a 32-byte random token used for DHT message authentication.
+	// F-03: upgraded from uint16 (65 536 possible values, trivially brute-forceable)
+	// to a 256-bit value generated with crypto/rand at node startup.
+	Secret [32]byte
 }
 
 // Metrics holds RPC-related Prometheus metrics.

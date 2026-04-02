@@ -155,7 +155,7 @@ func (m *Message) MarshalSize() int {
 		sz += 4 + len(val) // Size + value
 	}
 	sz += 1 // Iteration
-	sz += 2 // Secret
+	sz += 32 // Secret (F-03: upgraded to 256-bit token)
 	return sz
 }
 
@@ -207,7 +207,7 @@ func (m *Message) Marshal(buf []byte) ([]byte, error) {
 	}
 	buf[offset] = m.Iteration
 	offset += 1
-	codec.PutUint16(buf[offset:], m.Secret)
+	copy(buf[offset:offset+32], m.Secret[:]) // F-03: 256-bit secret
 	return buf[:m.MarshalSize()], nil
 }
 
@@ -273,6 +273,6 @@ func (m *Message) Unmarshal(data []byte) error {
 	}
 	m.Iteration = data[offset]
 	offset += 1
-	m.Secret = codec.Uint16(data[offset:])
+	copy(m.Secret[:], data[offset:offset+32]) // F-03: 256-bit secret
 	return nil
 }

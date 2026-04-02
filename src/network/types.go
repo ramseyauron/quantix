@@ -146,7 +146,10 @@ type NodePortConfig struct {
 	WSPort    string   `json:"ws_port"`
 	Role      NodeRole `json:"role"`
 	SeedNodes []string `json:"seed_nodes"`
-	DHTSecret uint16   // New field
+	// DHTSecret is deprecated; all nodes now generate a fresh 256-bit secret
+	// at startup via crypto/rand (F-03). This field is retained for JSON
+	// config backward-compatibility but is no longer used.
+	DHTSecret uint16 `json:"dht_secret,omitempty"` // deprecated — ignored at runtime
 }
 
 // DiscoveryMessage represents a UDP discovery message.

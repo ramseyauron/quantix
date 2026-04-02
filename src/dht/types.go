@@ -49,7 +49,9 @@ type DHTConfig struct {
 	Proto   string
 	Address net.UDPAddr
 	Routers []net.UDPAddr
-	Secret  uint16
+	// Secret is a 32-byte random token used to authenticate incoming DHT messages.
+	// F-03: upgraded from uint16 (trivially brute-forceable) to 256-bit crypto/rand token.
+	Secret [32]byte
 }
 
 type Config = DHTConfig
