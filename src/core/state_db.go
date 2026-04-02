@@ -208,16 +208,18 @@ func (s *StateDB) IncrementTotalSupply(amount *big.Int) {
 // Commit
 // ----------------------------------------------------------------------------
 
-// Commit flushes all pending writes to LevelDB and returns the new state root.
-// The pending cache is cleared after a successful flush.
+// Commit flushes all pending writes to LevelDB atomically and returns the new
+// state root.  All dirty accounts and the total-supply key are written in a
+// single leveldb.Batch (SEC-E02) so a mid-write crash cannot leave partial
+// state on disk.  The pending cache is cleared after a successful flush.
 // The returned []byte should be stored in block.Header.StateRoot.
 func (s *StateDB) Commit() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Write each dirty account individually using database.DB.Put.
-	// database.DB has no batch API so we call Put per key; for genesis with
-	// 14 accounts this is fine. Add a batch method to database.go if needed.
+	// Build the batch: one entry per dirty account + total-supply key.
+	batch := make(map[string][]byte, len(s.pending)+1)
+
 	for address, e := range s.pending {
 		rec := accountRecord{
 			Balance: e.balance.String(),
@@ -227,14 +229,15 @@ func (s *StateDB) Commit() ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("StateDB.Commit: marshal %s: %w", address, err)
 		}
-		if err := s.db.Put(accountPrefix+address, data); err != nil {
-			return nil, fmt.Errorf("StateDB.Commit: put %s: %w", address, err)
-		}
+		batch[accountPrefix+address] = data
 	}
 
-	// Persist total supply as a decimal string.
-	if err := s.db.Put(totalSupplyKey, []byte(s.totalSupply.String())); err != nil {
-		return nil, fmt.Errorf("StateDB.Commit: put total supply: %w", err)
+	// Include total-supply in the same atomic write.
+	batch[totalSupplyKey] = []byte(s.totalSupply.String())
+
+	// Atomic write — either all land or none (SEC-E02).
+	if err := s.db.PutBatch(batch); err != nil {
+		return nil, fmt.Errorf("StateDB.Commit: batch write: %w", err)
 	}
 
 	// Clear dirty cache.

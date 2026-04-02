@@ -91,9 +91,33 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 	for i, tx := range block.Body.TxsList {
 		if tx.Sender == "genesis" {
 			// Should not occur — genesis block body is now empty.
-			// Kept as a safety guard.f
+			// Kept as a safety guard.
 			continue
 		}
+
+		// SEC-E01: Sanity-check every transaction before touching state.
+		// Catches nil Amount, empty sender/receiver, non-positive amount,
+		// and nil gas fields — any of which would panic or silently corrupt state.
+		if err := tx.SanityCheck(); err != nil {
+			return fmt.Errorf("tx[%d] %s: sanity check failed: %w", i, tx.ID, err)
+		}
+
+		// SEC-E03: Signature verification at the execution layer.
+		// The mempool checks signatures on ingest, but blocks received via
+		// direct peer broadcast or archive sync bypass the mempool.  We add a
+		// hook here so a signing-service can be wired in later without changing
+		// the execution API.
+		//
+		// TODO(JARVIS): inject bc.signingService (SphincsManager) into Blockchain
+		// struct, then replace this comment with:
+		//   if bc.signingService != nil {
+		//       if ok := bc.signingService.VerifySignature(tx.Message(), tx.Timestamp,
+		//           tx.Nonce, tx.Signature, tx.PublicKey, tx.MerkleRoot, tx.Commitment); !ok {
+		//           return fmt.Errorf("tx[%d] %s: invalid signature", i, tx.ID)
+		//       }
+		//   }
+		// Tracked as SEC-E03; wiring requires access to the per-sender public key
+		// which is not yet stored on-chain — prerequisite for USI/Fingerprint work.
 
 		expected := stateDB.GetNonce(tx.Sender)
 		if tx.Nonce != expected {
@@ -164,6 +188,11 @@ func (bc *Blockchain) mintBlockReward(block *types.Block, stateDB *StateDB) {
 	}
 
 	// Normal block reward.
+	// SEC-E04: Guard against nil BaseBlockReward before dereferencing.
+	if bc.chainParams.BaseBlockReward == nil {
+		logger.Warn("mintBlockReward: BaseBlockReward is nil on block %d, skipping", block.GetHeight())
+		return
+	}
 	reward := new(big.Int).Set(bc.chainParams.BaseBlockReward)
 	if reward.Sign() <= 0 {
 		return

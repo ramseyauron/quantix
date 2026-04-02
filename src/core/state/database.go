@@ -282,3 +282,44 @@ func WrapLevelDB(ldb *leveldb.DB) *DB {
 		mutex: sync.RWMutex{},
 	}
 }
+
+// PutBatch writes multiple key-value pairs atomically using a leveldb.Batch.
+// If the process crashes mid-write, either all entries land or none do —
+// eliminating the partial-state risk of calling Put() in a loop (SEC-E02).
+//
+// The underlying db must be a *leveldb.DB; if a non-batch adapter is in use
+// this falls back gracefully to sequential Put calls with a warning.
+func (d *DB) PutBatch(entries map[string][]byte) error {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	if d.db == nil {
+		return fmt.Errorf("LevelDB is closed")
+	}
+
+	// Assert that the concrete implementation supports Batch writes.
+	ldb, ok := d.db.(*leveldb.DB)
+	if !ok {
+		// Non-LevelDB adapter (e.g. in tests): fall back to sequential writes.
+		logger.Warn("PutBatch: underlying DB does not support leveldb.Batch, falling back to sequential writes")
+		for k, v := range entries {
+			if err := d.db.Put([]byte(k), v, nil); err != nil {
+				return fmt.Errorf("PutBatch(fallback): put %s: %w", k, err)
+			}
+		}
+		return nil
+	}
+
+	batch := new(leveldb.Batch)
+	for k, v := range entries {
+		batch.Put([]byte(k), v)
+	}
+
+	if err := ldb.Write(batch, nil); err != nil {
+		logger.Error("PutBatch: atomic write failed: %v", err)
+		return fmt.Errorf("PutBatch: atomic write failed: %w", err)
+	}
+
+	logger.Info("PutBatch: wrote %d entries atomically", len(entries))
+	return nil
+}
