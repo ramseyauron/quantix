@@ -26,6 +26,7 @@ package consensus
 import (
 	"fmt"
 	"math/big"
+	"os"
 	"sync"
 
 	logger "github.com/ramseyauron/quantix/src/log"
@@ -118,6 +119,12 @@ func LoadCanonicalVDFParams() (VDFParams, error) {
 // reset the cache after startup, as doing so could cause parameter
 // divergence between nodes.
 func ResetVDFParamsCache() {
+	// F-25: Guard this function against production use.
+	// Resetting the cache post-startup can cause parameter divergence between nodes.
+	// Only allowed if DEVNET_ALLOW_VDF_RESET=1 is set (test/devnet environments only).
+	if os.Getenv("DEVNET_ALLOW_VDF_RESET") != "1" {
+		panic("ResetVDFParamsCache: called in production build without DEVNET_ALLOW_VDF_RESET=1; this is not allowed")
+	}
 	vdfParamsOnce = sync.Once{}
 	vdfParamsCached = VDFParams{}
 	vdfParamsErr = nil

@@ -34,7 +34,8 @@
 package dht
 
 import (
-	"math/rand" // #nosec G404 — used only for non-security timing jitter
+	"math/rand" // #nosec G404 — used ONLY for non-security timing jitter (random backoff delays).
+	// This is not used for key generation, session IDs, or any security-sensitive purpose.
 	"net"
 	"strconv"
 	"time"
