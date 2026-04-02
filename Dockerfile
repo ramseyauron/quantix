@@ -3,22 +3,16 @@
 # ─────────────────────────────────────────────
 # Stage 1: Builder
 # ─────────────────────────────────────────────
-FROM golang:1.24 AS builder
+FROM golang:1.24-alpine AS builder
 
-WORKDIR /build
+RUN apk add --no-cache git gcc musl-dev
 
-# Cache dependencies first
+WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source
 COPY . .
-
-# Build the CLI binary (headless node — no GUI)
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w" \
-    -o /usr/local/bin/quantix \
-    ./src/cli
+RUN go build -o bin/quantix ./src/cli/main.go
 
 # ─────────────────────────────────────────────
 # Stage 2: Runtime
@@ -30,23 +24,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
+# Non-root user
 RUN useradd -r -u 1000 -m -d /home/quantix quantix
 
-COPY --from=builder /usr/local/bin/quantix /usr/local/bin/quantix
+WORKDIR /app
+COPY --from=builder /app/bin/quantix .
 
-# Data directory
-RUN mkdir -p /data && chown quantix:quantix /data
-VOLUME ["/data"]
+RUN mkdir -p /app/data && chown -R quantix:quantix /app
+VOLUME ["/app/data"]
 
 USER quantix
-WORKDIR /data
 
 # Port legend:
 #   8560  — HTTP RPC API
-#   32421 — P2P TCP (peer networking)
+#   32307 — P2P TCP + UDP (peer networking / DHT)
 #   8700  — WebSocket (real-time events)
-EXPOSE 8560 32421 8700
+EXPOSE 8560 32307 8700
 
-ENTRYPOINT ["quantix"]
-CMD ["--help"]
+ENTRYPOINT ["./quantix"]

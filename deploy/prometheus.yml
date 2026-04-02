@@ -3,24 +3,22 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  # Devnet single node
   - job_name: 'quantix-devnet'
     static_configs:
       - targets: ['quantix-devnet:8560']
         labels:
-          env: 'devnet'
-          node: 'node0'
+          env: devnet
+          node: devnet
 
-  # Testnet 4 nodes
   - job_name: 'quantix-testnet'
     static_configs:
       - targets:
-          - 'node0:8560'
-          - 'node1:8561'
-          - 'node2:8562'
-          - 'node3:8563'
+          - 'validator-0:8560'
+          - 'validator-1:8561'
+          - 'validator-2:8562'
+          - 'validator-3:8563'
         labels:
-          env: 'testnet'
+          env: testnet
     relabel_configs:
       - source_labels: [__address__]
         target_label: node

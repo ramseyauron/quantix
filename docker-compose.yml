@@ -7,20 +7,30 @@ services:
     restart: unless-stopped
     ports:
       - "8560:8560"    # HTTP RPC
-      - "32421:32421"  # P2P TCP
+      - "32307:32307"  # P2P TCP/UDP
       - "8700:8700"    # WebSocket
     volumes:
-      - quantix-devnet-data:/data
+      - ./data/devnet:/app/data
     environment:
       - QUANTIX_ENV=devnet
-      - QUANTIX_LOG_LEVEL=debug
-    command: ["node", "--devnet", "--data-dir=/data", "--http-port=8560", "--p2p-port=32421", "--ws-port=8700"]
+    command:
+      - -nodes
+      - "1"
+      - -node-index
+      - "0"
+      - -roles
+      - validator
+      - -datadir
+      - /app/data
+      - -http-port
+      - "0.0.0.0:8560"
+      - -udp-port
+      - "32307"
+      - -tcp-addr
+      - "0.0.0.0:32307"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8560/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8560/blockcount"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-volumes:
-  quantix-devnet-data:
