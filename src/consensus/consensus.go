@@ -579,6 +579,28 @@ func (c *Consensus) consensusLoop() {
 			}
 			c.viewChangeBackoff = backoff
 			c.mu.Unlock()
+
+			// FIX-COMMIT-01: PBFT deadlock fallback.
+			// If we've been in PBFT with no committed block for 60s, temporarily
+			// mine a block via DEVNET_SOLO to break the deadlock (e.g. first block
+			// on a fresh 4-node testnet before PBFT quorum is fully established).
+			c.mu.RLock()
+			timeSinceBlock := common.GetTimeService().Now().Sub(c.lastBlockTime)
+			c.mu.RUnlock()
+			if timeSinceBlock > 60*time.Second && c.blockChain != nil {
+				logger.Warn("⚠️  PBFT deadlock detected: no committed block for %v — forcing DEVNET_SOLO fallback mine",
+					timeSinceBlock.Truncate(time.Second))
+				if _, err := c.blockChain.DevnetMineBlock(c.nodeID); err != nil {
+					logger.Warn("PBFT deadlock fallback mine failed: %v", err)
+				} else {
+					logger.Info("✅ PBFT deadlock fallback: DEVNET_SOLO mined a block; resuming PBFT")
+					c.mu.Lock()
+					c.lastBlockTime = common.GetTimeService().Now()
+					c.viewChangeBackoff = 2 * time.Second
+					c.mu.Unlock()
+				}
+			}
+
 			viewTimer.Reset(backoff)
 
 		case <-c.ctx.Done(): // Consensus stopping

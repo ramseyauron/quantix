@@ -273,12 +273,21 @@ func TestExecuteBlock_RejectBadNonce(t *testing.T) {
 		alice: big.NewInt(1000),
 	})
 
+	// FIX-COMMIT-01: bad-nonce txs are gracefully dropped (not block-fatal).
+	// The block should succeed but alice's balance must be unchanged (tx dropped).
 	tx := makeTx(alice, bob, 100, 5) // alice's nonce is 0, tx says 5
 	block := makeBlock(5, []*types.Transaction{tx})
 
 	bc := minimalBC(t, db)
 	_, err := bc.ExecuteBlock(block)
-	if err == nil {
-		t.Error("ExecuteBlock should fail when tx has wrong nonce")
+	if err != nil {
+		t.Errorf("ExecuteBlock should not fail on bad-nonce tx (graceful drop): %v", err)
+	}
+
+	// Verify the bad-nonce tx was dropped: alice's balance unchanged
+	sdb := NewStateDB(db)
+	aliceBal := sdb.GetBalance(alice)
+	if aliceBal.Cmp(big.NewInt(1000)) != 0 {
+		t.Errorf("alice balance = %s, want 1000 (bad-nonce tx should be dropped)", aliceBal)
 	}
 }

@@ -91,6 +91,7 @@ type BlockChain interface {
 	GetLatestBlock() Block
 	ValidateBlock(block Block) error
 	CommitBlock(block Block) error
+	DevnetMineBlock(nodeID string) (uint64, error)
 	GetBlockByHash(hash string) Block
 	GetValidatorStake(validatorID string) *big.Int
 	GetTotalStaked() *big.Int
