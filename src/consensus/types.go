@@ -290,6 +290,9 @@ type Consensus struct {
 
 	// P2-5: partition detection — track when last proposal arrived
 	lastProposalTime time.Time // updated each time a proposal is processed
+
+	// P2-4: devMode skips SPHINCS+ sig verification on votes/proposals for testnet
+	devMode bool
 }
 
 // SigningService handles cryptographic signing for consensus messages

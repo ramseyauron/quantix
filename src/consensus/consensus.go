@@ -738,7 +738,7 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 
 	// Verify proposal signature if signing service available.
 	// F-12: Reject proposals with missing signatures when signing service is configured.
-	if c.signingService != nil {
+	if c.signingService != nil && !c.devMode {
 		if len(proposal.Signature) == 0 {
 			logger.Warn("❌ Rejecting unsigned proposal from %s (signing service active)", proposal.ProposerID)
 			return
@@ -753,12 +753,14 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 			return
 		}
 		logger.Info("✅ Valid signature for proposal from %s", proposal.ProposerID)
-	} else {
+	} else if c.signingService == nil {
 		logger.Warn("⚠️ No signing service, skipping proposal signature verification")
+	} else {
+		logger.Info("⚠️ Dev-mode: skipping proposal signature verification from %s", proposal.ProposerID)
 	}
 
 	// Verify block header signature
-	if c.signingService != nil {
+	if c.signingService != nil && !c.devMode {
 		valid, err := c.signingService.VerifyBlockSignature(proposal.Block)
 		if err != nil || !valid {
 			logger.Warn("❌ Invalid block header signature from proposer %s: %v", proposal.ProposerID, err)
@@ -921,8 +923,8 @@ func (c *Consensus) processPrepareVote(vote *Vote) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Verify vote signature if signing service available
-	if c.signingService != nil && len(vote.Signature) > 0 {
+	// Verify vote signature if signing service available (skip in dev-mode)
+	if c.signingService != nil && len(vote.Signature) > 0 && !c.devMode {
 		valid, err := c.signingService.VerifyVote(vote)
 		if err != nil || !valid {
 			logger.Warn("Invalid prepare vote signature from %s", vote.VoterID)
@@ -1176,8 +1178,8 @@ func (c *Consensus) processVote(vote *Vote) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Verify vote signature if signing service available
-	if c.signingService != nil && len(vote.Signature) > 0 {
+	// Verify vote signature if signing service available (skip in dev-mode)
+	if c.signingService != nil && len(vote.Signature) > 0 && !c.devMode {
 		valid, err := c.signingService.VerifyVote(vote)
 		if err != nil || !valid {
 			logger.Warn("Invalid vote signature from %s", vote.VoterID)
@@ -1872,4 +1874,16 @@ func (c *Consensus) SetLeader(isLeader bool) {
 	defer c.mu.Unlock()
 	c.isLeader = isLeader
 	logger.Info("Node %s leader status set to %t", c.nodeID, isLeader)
+}
+
+// SetDevMode enables or disables dev-mode.
+// In dev-mode, SPHINCS+ signature verification is skipped on votes and proposals,
+// allowing 4-node testnet validators to reach PBFT quorum without key exchange.
+func (c *Consensus) SetDevMode(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.devMode = enabled
+	if enabled {
+		logger.Info("⚠️  Consensus dev-mode enabled for %s: sig verification skipped on votes", c.nodeID)
+	}
 }

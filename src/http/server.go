@@ -433,7 +433,18 @@ type ValidatorRegisterRequest struct {
 
 // handleValidatorRegister registers a new validator.
 // POST /validator/register — P2-3
+// SEC-P03: gated behind VALIDATOR_REGISTER_SECRET env var (same pattern as /mine).
 func (s *Server) handleValidatorRegister(c *gin.Context) {
+	secret := os.Getenv("VALIDATOR_REGISTER_SECRET")
+	if secret == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "validator registration disabled: VALIDATOR_REGISTER_SECRET not configured"})
+		return
+	}
+	if c.GetHeader("X-Register-Secret") != secret {
+		c.JSON(http.StatusForbidden, gin.H{"error": "invalid register secret"})
+		return
+	}
+
 	var req ValidatorRegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})

@@ -167,6 +167,27 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		log.Printf("⚠️  Dev-mode enabled for %s: balance checks skipped", nodeConfig.Name)
 	}
 
+	// P2-SYNC: if seeds are provided, build HTTP base URLs and sync from peers before live operation.
+	if len(nodeConfig.SeedNodes) > 0 {
+		seedHTTPPort := nodeConfig.SeedHTTPPort
+		if seedHTTPPort == "" {
+			seedHTTPPort = "8590"
+		}
+		seedHTTPs := make([]string, 0, len(nodeConfig.SeedNodes))
+		for _, seed := range nodeConfig.SeedNodes {
+			host, _, err := net.SplitHostPort(seed)
+			if err != nil {
+				host = seed
+			}
+			seedHTTPs = append(seedHTTPs, fmt.Sprintf("http://%s:%s", host, seedHTTPPort))
+		}
+		resources[0].Blockchain.SetSeedPeers(seedHTTPs)
+		log.Printf("🔄 P2-SYNC: syncing from seed peers %v", seedHTTPs)
+		if err := resources[0].Blockchain.SyncFromSeeds(); err != nil {
+			log.Printf("⚠️  P2-SYNC warning: %v", err)
+		}
+	}
+
 	// Fix 2: dev-mode peer validator auto-registration.
 	// If seeds are provided, register this node with each seed and poll until
 	// 4 validators are present, then the consensus engine will switch to PBFT.

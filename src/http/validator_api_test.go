@@ -9,8 +9,26 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
+
+const testValidatorSecret = "test-secret-12345"
+
+// setValidatorSecret sets the VALIDATOR_REGISTER_SECRET env var for the
+// duration of a test and restores it on cleanup.
+func setValidatorSecret(t *testing.T) {
+	t.Helper()
+	t.Setenv("VALIDATOR_REGISTER_SECRET", testValidatorSecret)
+}
+
+// validatorRegisterRequest builds an authenticated POST /validator/register request.
+func validatorRegisterRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/validator/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Register-Secret", os.Getenv("VALIDATOR_REGISTER_SECRET"))
+	return req
+}
 
 // newTestServer builds a minimal Server with a temporary blockchain,
 // wires the gin router, and returns it ready for use with httptest.
@@ -33,11 +51,11 @@ func newTestServer(t *testing.T) *Server {
 // ---------------------------------------------------------------------------
 
 func TestValidatorRegister_OK(t *testing.T) {
+	setValidatorSecret(t)
 	srv := newTestServer(t)
 
 	body := `{"public_key":"abc123","stake_amount":"1000","node_address":"10.0.0.1:8080"}`
-	req := httptest.NewRequest(http.MethodPost, "/validator/register", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
+	req := validatorRegisterRequest(body)
 	w := httptest.NewRecorder()
 
 	srv.router.ServeHTTP(w, req)
@@ -60,12 +78,12 @@ func TestValidatorRegister_OK(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidatorGetList_IncludesRegistered(t *testing.T) {
+	setValidatorSecret(t)
 	srv := newTestServer(t)
 
 	// Register a validator first
 	body := `{"public_key":"pubkey-xyz","stake_amount":"2000","node_address":"192.168.1.5:9000"}`
-	regReq := httptest.NewRequest(http.MethodPost, "/validator/register", bytes.NewBufferString(body))
-	regReq.Header.Set("Content-Type", "application/json")
+	regReq := validatorRegisterRequest(body)
 	regW := httptest.NewRecorder()
 	srv.router.ServeHTTP(regW, regReq)
 	if regW.Code != http.StatusOK {
@@ -119,13 +137,13 @@ func TestValidatorGetList_IncludesRegistered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidatorRegister_Duplicate(t *testing.T) {
+	setValidatorSecret(t)
 	srv := newTestServer(t)
 
 	body := `{"public_key":"dup-key","stake_amount":"500","node_address":"dup.node:7777"}`
 
 	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/validator/register", bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
+		req := validatorRegisterRequest(body)
 		w := httptest.NewRecorder()
 		srv.router.ServeHTTP(w, req)
 
@@ -141,6 +159,7 @@ func TestValidatorRegister_Duplicate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidatorRegister_MissingFields(t *testing.T) {
+	setValidatorSecret(t)
 	srv := newTestServer(t)
 
 	tests := []struct {
@@ -155,8 +174,7 @@ func TestValidatorRegister_MissingFields(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/validator/register", bytes.NewBufferString(tc.body))
-			req.Header.Set("Content-Type", "application/json")
+			req := validatorRegisterRequest(tc.body)
 			w := httptest.NewRecorder()
 			srv.router.ServeHTTP(w, req)
 
