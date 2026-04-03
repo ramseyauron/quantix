@@ -62,16 +62,17 @@ func TestAtomicity_FailedBlockLeavesNoPartialState(t *testing.T) {
 
 	// tx0: valid — alice→bob 100, nonce=0
 	tx0 := makeTx(wpAlice, wpBob, 100, 0)
-	// tx1: bad nonce — FIX-COMMIT-01: gracefully dropped, not block-fatal
+	// tx1: bad nonce — SEC-C01: gracefully dropped in dev-mode, not block-fatal
 	tx1 := makeTx(wpAlice, wpBob, 100, 5)
 
 	block := makeBlock(5, []*types.Transaction{tx0, tx1})
 	bc := minimalBC(t, db)
+	bc.devMode = true // SEC-C01: graceful nonce drop only in dev-mode
 
 	// Block should succeed: tx0 applies, tx1 is dropped
 	_, err := bc.ExecuteBlock(block)
 	if err != nil {
-		t.Fatalf("ExecuteBlock should succeed with graceful bad-nonce drop: %v", err)
+		t.Fatalf("dev-mode ExecuteBlock should succeed with graceful bad-nonce drop: %v", err)
 	}
 
 	// tx0 executed: alice paid 100 + gas, bob received 100

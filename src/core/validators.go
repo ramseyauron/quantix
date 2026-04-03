@@ -10,11 +10,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 	"time"
 
 	logger "github.com/ramseyauron/quantix/src/log"
 )
+
+// nodeAddressRE matches valid node addresses: alphanumeric, dots, colons,
+// hyphens, underscores — max 253 chars (longest valid DNS + port).
+// SEC-P02: prevents LevelDB key injection via crafted NodeAddress values.
+var nodeAddressRE = regexp.MustCompile(`^[a-zA-Z0-9._:\-]{1,253}$`)
+
+// validateNodeAddress returns an error if the address contains characters
+// that are unsafe to use as a LevelDB key component.
+func validateNodeAddress(addr string) error {
+	if !nodeAddressRE.MatchString(addr) {
+		return fmt.Errorf("node_address contains invalid characters or exceeds 253 chars: %q", addr)
+	}
+	return nil
+}
 
 // ValidatorRegistration holds data submitted to POST /validator/register.
 type ValidatorRegistration struct {
@@ -31,6 +46,10 @@ const valKeyPrefix = "val:"
 func (bc *Blockchain) RegisterValidator(reg *ValidatorRegistration) error {
 	if reg.NodeAddress == "" {
 		return fmt.Errorf("node_address is required")
+	}
+	// SEC-P02: sanitize NodeAddress before using it as a LevelDB key.
+	if err := validateNodeAddress(reg.NodeAddress); err != nil {
+		return err
 	}
 	if reg.PublicKey == "" {
 		return fmt.Errorf("public_key is required")

@@ -167,9 +167,10 @@ func TestGracefulNonceDrop_BadNonceTx_BlockSucceeds(t *testing.T) {
 		Amount: big.NewInt(100), GasLimit: big.NewInt(0), GasPrice: big.NewInt(0),
 		Nonce: 5,
 	}
-	bc := fastMinimalBC(t, db)
+	// SEC-C01: graceful nonce drop only applies in dev-mode.
+	bc := fastDevModeBC(t, db)
 	if _, err := bc.ExecuteBlock(makeBlock(1, []*types.Transaction{badNonceTx})); err != nil {
-		t.Errorf("FIX-COMMIT-01: bad-nonce tx should be dropped gracefully: %v", err)
+		t.Errorf("dev-mode: bad-nonce tx should be dropped gracefully: %v", err)
 	}
 }
 
@@ -209,9 +210,10 @@ func TestGracefulNonceDrop_MixedBlock_ValidTxsStillApply(t *testing.T) {
 		Amount: big.NewInt(500), GasLimit: big.NewInt(0), GasPrice: big.NewInt(0),
 		Nonce: 99,
 	}
-	bc := fastMinimalBC(t, db)
+	// SEC-C01: mixed block with bad-nonce tx only succeeds in dev-mode.
+	bc := fastDevModeBC(t, db)
 	if _, err := bc.ExecuteBlock(makeBlock(1, []*types.Transaction{validTx, badNonceTx})); err != nil {
-		t.Fatalf("mixed block: %v", err)
+		t.Fatalf("dev-mode mixed block: %v", err)
 	}
 	sdb := NewStateDB(db)
 	if sdb.GetBalance(alice).Cmp(big.NewInt(1500)) != 0 {

@@ -71,6 +71,12 @@ import (
 const maxMessageSize = 64 * 1024 // 64 KB
 
 // Global server instance for connection management.
+// SEC-T02: This is a process-wide singleton. Running multiple logical nodes
+// in the same OS process (e.g. integration tests with SetupNodes) will share
+// this single connection table, so connections and encryption keys from one
+// node will be visible to all others. This is intentional for single-process
+// devnet/test scenarios but means true multi-node isolation requires separate
+// processes (or refactoring globalServer into a per-node instance).
 var globalServer = &TCPServer{
 	connections: make(map[string]net.Conn),
 	encKeys:     make(map[string]*security.EncryptionKey),

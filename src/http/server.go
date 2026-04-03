@@ -124,6 +124,21 @@ func NewServer(address string, messageCh chan *security.Message, blockchain *cor
 		readyCh: readyCh,
 	}
 	s.setupRoutes()
+	// SEC-F01: background goroutine to prune faucet rate-limiter entries older
+	// than 2 minutes, preventing unbounded growth of the sync.Map over time.
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-2 * time.Minute)
+			s.faucetLimiter.Range(func(key, value interface{}) bool {
+				if t, ok := value.(time.Time); ok && t.Before(cutoff) {
+					s.faucetLimiter.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 	return s
 }
 
@@ -556,6 +571,9 @@ func (s *Server) handleFaucet(c *gin.Context) {
 		Amount:    amountInt,
 		Timestamp: now.Unix(),
 		Nonce:     uint64(now.UnixNano()),
+		// SEC-F02: set explicit zero values to prevent nil dereference in gas accounting.
+		GasLimit: big.NewInt(0),
+		GasPrice: big.NewInt(0),
 	}
 	// Generate a deterministic ID
 	tx.ID = fmt.Sprintf("faucet-%s-%d", req.Address, now.UnixNano())

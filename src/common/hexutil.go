@@ -28,6 +28,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"math/big"
 	"strconv"
 	"strings"
@@ -147,10 +148,10 @@ func GenerateRandomNonce() string {
 	randomBytes := make([]byte, 8)
 	_, err := rand.Read(randomBytes)
 	if err != nil {
-		// Fallback to timestamp-based randomness if crypto rand fails
-		fallbackNonce := GetCurrentTimestamp()
-		randomBytes = make([]byte, 8)
-		binary.BigEndian.PutUint64(randomBytes, uint64(fallbackNonce))
+		// SEC-T01: fail-closed — a broken crypto/rand means we cannot generate
+		// secure nonces. Using a timestamp fallback would silently produce
+		// predictable values. Panic so the operator is forced to fix the issue.
+		log.Fatalf("GenerateRandomNonce: crypto/rand failed: %v", err)
 	}
 
 	// Convert to 16-character hex string (like Ethereum)

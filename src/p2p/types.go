@@ -58,6 +58,13 @@ type Server struct {
 	neighborsCache     map[network.NodeID][]network.PeerInfo
 	neighborsCacheTime time.Time
 	cacheMutex         sync.RWMutex
+
+	// SEC-P05: recently-seen block hashes for gossip dedup.
+	// Prevents broadcast amplification when the same block arrives from
+	// multiple peers simultaneously. Entries older than seenBlocksTTL are
+	// pruned lazily on each insertion.
+	seenBlocks    map[string]time.Time
+	seenBlocksMu  sync.Mutex
 }
 
 func (s *Server) LocalNode() *network.Node {

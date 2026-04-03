@@ -34,6 +34,14 @@ import (
 const (
 	// accPrefix is the LevelDB key prefix for AccountState records.
 	// Distinct from state_db.go's "acct:" prefix to avoid key collisions.
+	//
+	// SEC-E05: This "acc:" prefix system is NOT used by the execution path.
+	// The active execution path uses StateDB (src/core/state_db.go) with the
+	// "acct:" prefix. This package currently serves as a standalone helper for
+	// direct DB access outside the block-execution pipeline.
+	// TODO: Either wire this into the execution path as a replacement for
+	// StateDB's inline key logic, or remove it entirely once StateDB is the
+	// sole account store.
 	accPrefix = "acc:"
 )
 
