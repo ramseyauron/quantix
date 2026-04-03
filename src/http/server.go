@@ -188,6 +188,8 @@ func (s *Server) setupRoutes() {
 	// P2-3: Validator registration
 	s.router.POST("/validator/register", s.handleValidatorRegister)
 	s.router.GET("/validators", s.handleGetValidators)
+	// P2-FAUCET: dev faucet endpoint (dev-mode only)
+	s.router.POST("/faucet", s.handleFaucet)
 
 	// F-20: /mine endpoint requires DEVNET_MINE_SECRET env var to be set and matched.
 	// If not configured, the endpoint is disabled (returns 403).
@@ -486,5 +488,77 @@ func (s *Server) handleGetValidators(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"validators": validators,
 		"count":      len(validators),
+	})
+}
+
+// FaucetRequest is the body for POST /faucet.
+// P2-FAUCET: dev faucet — only works in dev-mode.
+type FaucetRequest struct {
+	Address string  `json:"address"`
+	Amount  float64 `json:"amount"` // in QTX, max 1000
+}
+
+// handleFaucet sends test QTX to a given address.
+// POST /faucet — P2-FAUCET
+func (s *Server) handleFaucet(c *gin.Context) {
+	if !s.blockchain.IsDevMode() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "faucet only available in dev-mode"})
+		return
+	}
+
+	var req FaucetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+	if req.Address == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "address is required"})
+		return
+	}
+	if req.Amount <= 0 || req.Amount > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be between 0 and 1000 QTX"})
+		return
+	}
+
+	// Rate limit: 1 request per address per minute
+	now := time.Now()
+	if val, loaded := s.faucetLimiter.Load(req.Address); loaded {
+		lastReq := val.(time.Time)
+		if now.Sub(lastReq) < time.Minute {
+			remaining := time.Minute - now.Sub(lastReq)
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":            "rate limit: 1 request per address per minute",
+				"retry_after_secs": int(remaining.Seconds()) + 1,
+			})
+			return
+		}
+	}
+	s.faucetLimiter.Store(req.Address, now)
+
+	// Convert QTX amount to base units (* 1e18)
+	amountBase := new(big.Float).Mul(big.NewFloat(req.Amount), big.NewFloat(1e18))
+	amountInt, _ := amountBase.Int(nil)
+
+	tx := &types.Transaction{
+		Sender:    "genesis_faucet",
+		Receiver:  req.Address,
+		Amount:    amountInt,
+		Timestamp: now.Unix(),
+		Nonce:     uint64(now.UnixNano()),
+	}
+	// Generate a deterministic ID
+	tx.ID = fmt.Sprintf("faucet-%s-%d", req.Address, now.UnixNano())
+
+	if err := s.blockchain.AddTransaction(tx); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to add faucet transaction: %v", err)})
+		return
+	}
+
+	log.Printf("[FAUCET] Sent %.4f QTX to %s (tx: %s)", req.Amount, req.Address, tx.ID)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"tx_id":   tx.ID,
+		"address": req.Address,
+		"amount":  req.Amount,
 	})
 }

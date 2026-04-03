@@ -24,6 +24,7 @@ func newTestServer(t *testing.T) *Server {
 	}
 
 	srv := NewServer(":0", nil, bc, nil)
+	bc.SetDevMode(true) // enable dev-mode for faucet and other dev endpoints
 	return srv
 }
 
