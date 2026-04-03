@@ -144,3 +144,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## By following this guide
 
 you will be able to contribute to the Quantix project and help us build a quantum-resistant blockchain ecosystem.
+
+## Public Devnet RPC
+
+HTTP: http://164.68.118.17:8560
+Chain ID: 73310
