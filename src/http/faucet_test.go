@@ -34,7 +34,7 @@ func TestFaucet_ValidRequest(t *testing.T) {
 		t.Skip("POST /faucet not yet implemented — waiting for J.A.R.V.I.S.")
 	}
 
-	body := `{"address":"qtx1testaddress"}`
+	body := `{"address":"qtx1testaddress","amount":10}`
 	req := httptest.NewRequest(http.MethodPost, "/faucet", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -94,7 +94,7 @@ func TestFaucet_RateLimit_429(t *testing.T) {
 	}
 
 	const addr = "qtx1ratelimitme"
-	body := `{"address":"` + addr + `"}`
+	body := `{"address":"` + addr + `","amount":1}`
 
 	// First request should succeed.
 	req1 := httptest.NewRequest(http.MethodPost, "/faucet", bytes.NewBufferString(body))

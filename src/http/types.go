@@ -50,6 +50,7 @@ type Server struct {
 	lastTransaction      *types.Transaction
 	readyCh              chan struct{}
 	consensusValidatorSet ValidatorRegistrar // P2-6: optional consensus validator set
+	faucetLimiter        sync.Map           // P2-FAUCET: map[address]time.Time last request
 }
 
 // SetConsensusValidatorSet wires the consensus validator set to the HTTP server (P2-6).
