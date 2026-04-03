@@ -135,6 +135,19 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 
 		bal := stateDB.GetBalance(tx.Sender)
 		if bal.Cmp(totalCost) < 0 {
+			if bc.devMode {
+				// Dev-mode: skip balance check, allow unfunded test addresses.
+				logger.Warn("executor: dev-mode: skipping balance check for tx[%d] %s (bal=%s needs=%s)",
+					i, tx.ID, bal.String(), totalCost.String())
+				stateDB.AddBalance(tx.Receiver, tx.Amount)
+				if proposerID != "" && gasFee.Sign() > 0 {
+					stateDB.AddBalance(proposerID, gasFee)
+				}
+				stateDB.IncrementNonce(tx.Sender)
+				logger.Info("executor: tx[%d] %s → %s %s nQTX (gas %s nQTX) ✓ [dev-mode]",
+					i, tx.Sender, tx.Receiver, tx.Amount.String(), gasFee.String())
+				continue
+			}
 			return fmt.Errorf("tx[%d] %s: %s has %s nQTX, needs %s nQTX",
 				i, tx.ID, tx.Sender, bal.String(), totalCost.String())
 		}
