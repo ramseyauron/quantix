@@ -151,6 +151,7 @@ func NewServer(config network.NodePortConfig, blockchain *core.Blockchain, db *l
 		blockchain:  blockchain,                        // Blockchain instance
 		stopCh:      make(chan struct{}),               // Stop signal channel
 		devMode:     config.DevMode,                    // FIX-P2P-03: dev mode flag
+		seenBlocks:  make(map[string]time.Time),        // SEC-P05: gossip dedup cache
 	}
 }
 
@@ -659,6 +660,12 @@ func (s *Server) handleMessages() {
 				}
 			}
 			if block != nil {
+				// SEC-P05: skip re-broadcast if we've already seen this block hash.
+				if s.isBlockSeen(block.GetHash()) {
+					log.Printf("gossip_block: skipping already-seen block height=%d hash=%s", block.GetHeight(), block.GetHash())
+					break
+				}
+				s.markBlockSeen(block.GetHash())
 				if err := s.blockchain.AddBlockFromPeer(block); err != nil {
 					log.Printf("gossip_block: failed to add block height=%d: %v", block.GetHeight(), err)
 				} else {
@@ -781,7 +788,10 @@ func (s *Server) Broadcast(msg *security.Message) {
 
 // BroadcastBlock sends a newly-committed block to all connected peers.
 // FIX-P2P-BROADCAST: use BroadcastToAll to avoid ephemeral-port/peerManager address mismatch.
+// SEC-P05: mark block as seen to suppress re-broadcast of incoming gossip blocks.
 func (s *Server) BroadcastBlock(block *types.Block) {
+	// Mark as seen so incoming gossip of this block is deduplicated.
+	s.markBlockSeen(block.GetHash())
 	msg := &security.Message{
 		Type: "gossip_block",
 		Data: block,
@@ -791,6 +801,38 @@ func (s *Server) BroadcastBlock(block *types.Block) {
 		log.Printf("BroadcastBlock: %v", err)
 	}
 	log.Printf("BroadcastBlock: broadcast block height=%d to all connections (%d errors)", block.GetHeight(), len(errs))
+}
+
+// seenBlocksTTL is how long a block hash is remembered for dedup (5 minutes).
+const seenBlocksTTL = 5 * time.Minute
+
+// markBlockSeen records a block hash as recently seen.
+// Old entries (> seenBlocksTTL) are pruned lazily on each call.
+func (s *Server) markBlockSeen(hash string) {
+	if hash == "" {
+		return
+	}
+	now := time.Now()
+	s.seenBlocksMu.Lock()
+	defer s.seenBlocksMu.Unlock()
+	// Lazy prune: remove expired entries.
+	for h, t := range s.seenBlocks {
+		if now.Sub(t) > seenBlocksTTL {
+			delete(s.seenBlocks, h)
+		}
+	}
+	s.seenBlocks[hash] = now
+}
+
+// isBlockSeen returns true if the block hash was recently seen (within seenBlocksTTL).
+func (s *Server) isBlockSeen(hash string) bool {
+	if hash == "" {
+		return false
+	}
+	s.seenBlocksMu.Lock()
+	defer s.seenBlocksMu.Unlock()
+	t, ok := s.seenBlocks[hash]
+	return ok && time.Since(t) <= seenBlocksTTL
 }
 
 // BroadcastTransaction sends a new transaction to all connected peers.

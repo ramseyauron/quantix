@@ -584,10 +584,12 @@ func (c *Consensus) consensusLoop() {
 			// If we've been in PBFT with no committed block for 60s, temporarily
 			// mine a block via DEVNET_SOLO to break the deadlock (e.g. first block
 			// on a fresh 4-node testnet before PBFT quorum is fully established).
+			// SEC-C02: only the current leader fires this fallback to prevent
+			// every node simultaneously mining a competing block.
 			c.mu.RLock()
 			timeSinceBlock := common.GetTimeService().Now().Sub(c.lastBlockTime)
 			c.mu.RUnlock()
-			if timeSinceBlock > 60*time.Second && c.blockChain != nil {
+			if timeSinceBlock > 60*time.Second && c.blockChain != nil && c.IsLeader() {
 				logger.Warn("⚠️  PBFT deadlock detected: no committed block for %v — forcing DEVNET_SOLO fallback mine",
 					timeSinceBlock.Truncate(time.Second))
 				if _, err := c.blockChain.DevnetMineBlock(c.nodeID); err != nil {

@@ -273,15 +273,16 @@ func TestExecuteBlock_RejectBadNonce(t *testing.T) {
 		alice: big.NewInt(1000),
 	})
 
-	// FIX-COMMIT-01: bad-nonce txs are gracefully dropped (not block-fatal).
+	// SEC-C01: in dev-mode, bad-nonce txs are gracefully dropped (not block-fatal).
 	// The block should succeed but alice's balance must be unchanged (tx dropped).
 	tx := makeTx(alice, bob, 100, 5) // alice's nonce is 0, tx says 5
 	block := makeBlock(5, []*types.Transaction{tx})
 
 	bc := minimalBC(t, db)
+	bc.devMode = true // SEC-C01: graceful drop only in dev-mode
 	_, err := bc.ExecuteBlock(block)
 	if err != nil {
-		t.Errorf("ExecuteBlock should not fail on bad-nonce tx (graceful drop): %v", err)
+		t.Errorf("dev-mode ExecuteBlock should not fail on bad-nonce tx (graceful drop): %v", err)
 	}
 
 	// Verify the bad-nonce tx was dropped: alice's balance unchanged
