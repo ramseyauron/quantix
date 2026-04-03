@@ -134,6 +134,18 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 				continue
 			}
 
+			// SEC-P01: verify block hash against block content before importing.
+			// Recompute the hash and compare to the claimed hash to prevent
+			// hash-spoofing attacks from malicious peers.
+			computedHashBytes := blk.GenerateBlockHash()
+			computedHash := fmt.Sprintf("%x", computedHashBytes)
+			claimedHash := blk.GetHash()
+			if computedHash != claimedHash {
+				logger.Warn("⚠️ Block %d hash mismatch: claimed=%s computed=%s — skipping",
+					blk.Header.Height, claimedHash, computedHash)
+				continue
+			}
+
 			localNow := bc.GetBlockCount()
 			log.Printf("[SYNC] Catching up: block %d/%d from seed", blk.Header.Height, seedCount)
 

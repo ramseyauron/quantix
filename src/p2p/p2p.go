@@ -385,6 +385,28 @@ func (s *Server) handleMessages() {
 				}
 			}
 
+		case "prepare":
+			// Handle consensus prepare votes (P2-4)
+			if vote, ok := msg.Data.(*consensus.Vote); ok {
+				if s.consensus != nil {
+					if err := s.consensus.HandlePrepareVote(vote); err != nil {
+						log.Printf("Failed to handle consensus prepare vote: %v", err)
+					}
+				} else {
+					log.Printf("Consensus not initialized, ignoring prepare vote")
+				}
+			}
+
+		case "timeout":
+			// Handle consensus timeout messages (P2-4)
+			if timeout, ok := msg.Data.(*consensus.TimeoutMsg); ok {
+				if s.consensus != nil {
+					if err := s.consensus.HandleTimeout(timeout); err != nil {
+						log.Printf("Failed to handle consensus timeout: %v", err)
+					}
+				}
+			}
+
 		case "ping":
 			// Handle ping messages (keep-alive)
 			if pingData, ok := msg.Data.(network.PingData); ok {

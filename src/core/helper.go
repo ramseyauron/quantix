@@ -140,10 +140,11 @@ func (bc *Blockchain) StartTPSAutoSave(ctx context.Context) {
 	bc.storage.StartTPSAutoSave(ctx)
 }
 
-// VerifyMessage verifies a signed message (placeholder)
+// VerifyMessage verifies a signed message (placeholder).
+// SEC-P04: returns false (fail-closed) until real cryptographic verification is wired in.
 func (bc *Blockchain) VerifyMessage(address, signature, message string) bool {
-	logger.Info("Message verification requested - address: %s, message: %s", address, message)
-	return true
+	logger.Info("Message verification requested - address: %s, message: %s (not yet implemented, rejecting)", address, message)
+	return false
 }
 
 // HasPendingTx checks if a transaction is in the mempool
