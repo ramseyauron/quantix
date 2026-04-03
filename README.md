@@ -149,3 +149,20 @@ you will be able to contribute to the Quantix project and help us build a quantu
 
 HTTP: http://164.68.118.17:8560
 Chain ID: 73310
+
+---
+
+## Fix Log
+
+### FIX-COMMIT-01 · 2026-04-03 · J.A.R.V.I.S. · commit `4745e1a`
+
+**Issue 1 — Nonce mismatch blocks CommitBlock**
+- Symptom: `CommitBlock` failed with `"bad nonce: got 301 want 0"` on fresh accounts in testnet
+- Fix: `src/core/executor.go` — bad-nonce txs are now gracefully **dropped** (logged as WARN) instead of returning a block-fatal error. Valid txs in the same block are unaffected.
+- Also updated `src/consensus/types.go`: added `DevnetMineBlock(nodeID string) (uint64, error)` to the `BlockChain` interface.
+
+**Issue 2 — PBFT view-change storm / deadlock**
+- Symptom: PBFT spun through hundreds of views with no committed block, burning CPU
+- Fix: `src/consensus/consensus.go` — added PBFT deadlock fallback: if no block has been committed for **60 seconds** in PBFT mode, the node temporarily mines one block via `DevnetMineBlock` to break the deadlock, then resumes PBFT. Existing exponential backoff (2 s → 30 s cap) verified still active.
+
+Tests updated: `TestExecuteBlock_RejectBadNonce`, `TestAtomicity_FailedBlockLeavesNoPartialState` — both now reflect graceful-drop semantics and pass.
