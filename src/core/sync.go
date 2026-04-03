@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -76,31 +77,41 @@ func (bc *Blockchain) SyncFromSeeds() error {
 }
 
 // syncFromPeer fetches all blocks from a single seed peer using paginated GET /blocks.
+// Loops until local block count equals seed block count (P2-SYNC spec).
 func (bc *Blockchain) syncFromPeer(peerBase string) error {
 	const pageSize = 100
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	// Query the peer's block count first
-	resp, err := client.Get(fmt.Sprintf("%s/blockcount", peerBase))
+	// getSeedCount queries the seed's block count.
+	getSeedCount := func() (uint64, error) {
+		resp, err := client.Get(fmt.Sprintf("%s/blockcount", peerBase))
+		if err != nil {
+			return 0, fmt.Errorf("GET /blockcount: %w", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var countResp struct {
+			Count uint64 `json:"count"`
+		}
+		if err := json.Unmarshal(body, &countResp); err != nil {
+			return 0, fmt.Errorf("parse /blockcount: %w", err)
+		}
+		return countResp.Count, nil
+	}
+
+	seedCount, err := getSeedCount()
 	if err != nil {
-		return fmt.Errorf("GET /blockcount: %w", err)
+		return err
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
 
-	var countResp struct {
-		Count uint64 `json:"count"`
-	}
-	if err := json.Unmarshal(body, &countResp); err != nil {
-		return fmt.Errorf("parse /blockcount: %w", err)
-	}
-	total := countResp.Count
+	// We already have genesis (height 0); sync from height 1 onwards.
+	for {
+		localCount := bc.GetBlockCount()
+		if localCount >= seedCount {
+			break
+		}
 
-	// We already have genesis (height 0); skip it
-	var from uint64 = 1
-	fetched := uint64(0)
-
-	for from <= total {
+		from := localCount + 1 // start from next needed block
 		url := fmt.Sprintf("%s/blocks?from=%d&limit=%d", peerBase, from, pageSize)
 		resp, err := client.Get(url)
 		if err != nil {
@@ -118,27 +129,30 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 		}
 
 		for _, blk := range blocks {
-			// Verify block hash before storing
-			computedHash := blk.GetHash()
-			if computedHash == "" {
+			if blk.GetHash() == "" {
 				logger.Warn("⚠️ Received block with empty hash at height %d, skipping", blk.Header.Height)
 				continue
 			}
 
-			logger.Info("Syncing from peer %s: block %d/%d", peerBase, blk.Header.Height, total)
+			localNow := bc.GetBlockCount()
+			log.Printf("[SYNC] Catching up: block %d/%d from seed", blk.Header.Height, seedCount)
 
-			// Import the block into our chain
-			result := bc.ImportBlock(blk)
-			if result != ImportedBest && result != ImportedExisting && result != ImportedSide {
-				logger.Warn("Failed to import block %d from peer: %v", blk.Header.Height, result)
-				// Continue — don't abort the whole sync for one bad block
+			if err := bc.AddBlockFromPeer(blk); err != nil {
+				// Fall back to ImportBlock for resilience
+				result := bc.ImportBlock(blk)
+				if result != ImportedBest && result != ImportedExisting && result != ImportedSide {
+					logger.Warn("Failed to import block %d from peer: result=%v", blk.Header.Height, result)
+				}
 			}
-			fetched++
+			_ = localNow
 		}
 
-		from += uint64(len(blocks))
+		// Refresh seed count in case it grew
+		if newCount, err := getSeedCount(); err == nil {
+			seedCount = newCount
+		}
 	}
 
-	logger.Info("✅ Sync complete: fetched %d blocks from %s", fetched, peerBase)
+	log.Printf("[SYNC] Caught up with seed %s at block %d", peerBase, bc.GetBlockCount())
 	return nil
 }
