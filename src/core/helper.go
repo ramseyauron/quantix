@@ -168,6 +168,11 @@ func (bc *Blockchain) SetDevMode(enabled bool) {
 	bc.devMode = enabled
 }
 
+// IsDevMode returns whether the blockchain is in dev-mode.
+func (bc *Blockchain) IsDevMode() bool {
+	return bc.devMode
+}
+
 func (bc *Blockchain) SetGossipBroadcaster(b GossipBroadcaster) {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
