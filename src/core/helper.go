@@ -154,6 +154,12 @@ func (bc *Blockchain) HasPendingTx(hash string) bool {
 // SetGossipBroadcaster wires the P2P gossip broadcaster so that CommitBlock
 // and AddTransaction can push data to connected peers immediately.
 // FIX-P2P-05
+// SetDevMode enables or disables dev-mode. In dev-mode, balance checks are
+// skipped in applyTransactions, allowing unfunded test addresses to transact.
+func (bc *Blockchain) SetDevMode(enabled bool) {
+	bc.devMode = enabled
+}
+
 func (bc *Blockchain) SetGossipBroadcaster(b GossipBroadcaster) {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()

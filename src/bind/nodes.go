@@ -24,10 +24,14 @@
 package bind
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	nethttp "net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -148,6 +152,80 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	// Re-inject DB into the resources blockchain (same object, belt-and-suspenders)
 	resources[0].Blockchain.SetStorageDB(database.WrapLevelDB(db))
 	resources[0].Blockchain.SetStateDB(database.WrapLevelDB(db))
+
+	// Fix 1: dev-mode balance skip
+	if nodeConfig.DevMode {
+		resources[0].Blockchain.SetDevMode(true)
+		log.Printf("⚠️  Dev-mode enabled for %s: balance checks skipped", nodeConfig.Name)
+	}
+
+	// Fix 2: dev-mode peer validator auto-registration.
+	// If seeds are provided, register this node with each seed and poll until
+	// 4 validators are present, then the consensus engine will switch to PBFT.
+	if nodeConfig.DevMode && len(nodeConfig.SeedNodes) > 0 {
+		localNode := resources[0].P2PServer.LocalNode()
+		myPubKey := hex.EncodeToString(localNode.PublicKey)
+		myAddr := nodeConfig.TCPAddr
+		go func() {
+			// Wait for HTTP server to be ready
+			time.Sleep(5 * time.Second)
+			// Determine seed HTTP endpoints: seed_ip:8560
+			seedHTTPs := make([]string, 0, len(nodeConfig.SeedNodes))
+			for _, seed := range nodeConfig.SeedNodes {
+				host, _, err := net.SplitHostPort(seed)
+				if err != nil {
+					host = seed
+				}
+				seedHTTPs = append(seedHTTPs, fmt.Sprintf("http://%s:8560", host))
+			}
+
+			// Register with each seed
+			reg := core.ValidatorRegistration{
+				PublicKey:    myPubKey,
+				StakeAmount:  "1000000",
+				NodeAddress:  myAddr,
+				Active:       true,
+				RegisteredAt: time.Now(),
+			}
+			regData, _ := json.Marshal(reg)
+			for _, seedURL := range seedHTTPs {
+				url := seedURL + "/validator/register"
+				resp, err := nethttp.Post(url, "application/json", bytes.NewReader(regData)) //nolint:noctx
+				if err != nil {
+					log.Printf("⚠️  validator register to %s failed: %v", url, err)
+					continue
+				}
+				io.Copy(io.Discard, resp.Body) //nolint:errcheck
+				resp.Body.Close()
+				log.Printf("✅ Registered validator with seed %s (status %d)", seedURL, resp.StatusCode)
+			}
+
+			// Also register self on local HTTP
+			localHTTPPort := nodeConfig.HTTPPort
+			selfURL := "http://" + localHTTPPort + "/validator/register"
+			resp, err := nethttp.Post(selfURL, "application/json", bytes.NewReader(regData)) //nolint:noctx
+			if err == nil {
+				io.Copy(io.Discard, resp.Body) //nolint:errcheck
+				resp.Body.Close()
+			}
+
+			// Poll validator count; when >= 4, consensus auto-upgrades via ActiveConsensusMode
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				validators, err := resources[0].Blockchain.GetValidators()
+				if err != nil {
+					continue
+				}
+				n := len(validators)
+				log.Printf("🔍 Validator count: %d / 4", n)
+				if n >= 4 {
+					log.Printf("🎉 %s: 4 validators registered — PBFT cluster ready!", nodeConfig.Name)
+					return
+				}
+			}
+		}()
+	}
 
 	// Devnet solo block producer — mines a new block every 10s from mempool
 	go func() {

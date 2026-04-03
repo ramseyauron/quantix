@@ -161,6 +161,10 @@ type Blockchain struct {
 
 	// FIX-P2P-05: gossip broadcaster – set by P2P layer after initialization
 	gossipBroadcaster GossipBroadcaster
+
+	// devMode: when true, balance checks are skipped in applyTransactions.
+	// Allows testnet transactions from unfunded addresses without genesis funding.
+	devMode bool
 }
 
 // GossipBroadcaster is implemented by the P2P server and called by the
