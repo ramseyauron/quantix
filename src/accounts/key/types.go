@@ -69,8 +69,14 @@ type KeyPair struct {
 	WalletType     HardwareWalletType     `json:"wallet_type"`
 	DerivationPath string                 `json:"derivation_path,omitempty"`
 	ChainID        uint64                 `json:"chain_id"`
-	CreatedAt      time.Time              `json:"created_at"`
+	CreatedAt      time.Time             `json:"created_at"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+
+	// SEC-K01: Per-key random salt for passphrase KDF.
+	// Must be generated with crypto/rand at key creation time and stored here.
+	// Using a random per-key salt prevents rainbow-table and cross-key attacks.
+	// 16 bytes (128 bits) of entropy.
+	KDFSalt []byte `json:"kdf_salt,omitempty"`
 }
 
 // WalletInfo contains wallet metadata
@@ -111,7 +117,8 @@ type StorageInterface interface {
 	RemoveKey(keyID string) error
 	GetWalletInfo() *WalletInfo
 	StoreEncryptedKey(encryptedSK, publicKey []byte, address string, walletType HardwareWalletType, chainID uint64, derivationPath string, metadata map[string]interface{}) (*KeyPair, error)
-	EncryptData(data []byte, passphrase string) ([]byte, error)
+	// SEC-K01: EncryptData returns (ciphertext, kdfSalt, error). Callers must persist kdfSalt in KeyPair.KDFSalt.
+	EncryptData(data []byte, passphrase string) ([]byte, []byte, error)
 	DecryptKey(keyPair *KeyPair, passphrase string) ([]byte, error)
 }
 
