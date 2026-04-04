@@ -220,69 +220,50 @@ func TestSECK01_WrongSalt_CannotDecrypt(t *testing.T) {
 	kpWrongSalt := keyPairForTest(salt2, ct1) // ct1 encrypted with salt1, but kp uses salt2
 	decrypted, err := ks.DecryptKey(&kpWrongSalt, passphrase)
 
-	// SEC-K02: Due to memoryCleanse bug, this currently SUCCEEDS (all keys use zero AES key).
-	// The correct behavior is: err != nil (authentication failure from AES-GCM).
-	// This test documents the expected behavior and will pass once SEC-K02 is fixed.
+	// SEC-K02 is now FIXED (E.D.I.T.H. commit e58a11f).
+	// Wrong-salt decryption must fail with an AES-GCM authentication error.
 	if err == nil && bytes.Equal(decrypted, key1Data) {
-		// Known SEC-K02 bug: log the finding but don't fail the test (it's a known issue)
-		t.Logf("SEC-K02 DETECTED: wrong-salt cross-decryption succeeded — memoryCleanse in BytesToKeySHA512AES zeroes key material before it is used. All encrypted keys effectively use the zero AES key. Fix: copy key/iv bytes before calling memoryCleanse(buf).")
-		// TODO: change this to t.Error once SEC-K02 is fixed in BytesToKeySHA512AES
+		t.Error("SEC-K01/K02: cross-salt decryption succeeded — per-key salt isolation BROKEN (SEC-K02 regression)")
 	}
+	if err == nil && !bytes.Equal(decrypted, key1Data) {
+		t.Error("SEC-K01/K02: wrong-salt decryption returned no error but produced garbage plaintext — AES-GCM tag not verified")
+	}
+	// Correct outcome: err != nil (message authentication failed)
 }
 
 // ---------------------------------------------------------------------------
 // SEC-K02: memoryCleanse bug — zeroes key material before use
 // ---------------------------------------------------------------------------
 
-// TestSECK02_MemoryCleanse_ZeroesKeyMaterial documents SEC-K02:
-// BytesToKeySHA512AES calls memoryCleanse(buf) AFTER setting key/iv as slices
-// of buf, but BEFORE returning them. Since key and iv share buf's backing array,
-// the cleanse zeroes the key material that SetKeyFromPassphrase will store.
-// Result: all keys encrypted by DiskKeyStore use the AES zero key (0x000...000).
+// TestSECK02_MemoryCleanse_Fixed verifies SEC-K02 is FIXED (commit e58a11f).
+// Previously, BytesToKeySHA512AES called memoryCleanse(buf) after setting key/iv
+// as slices of buf — zeroing the key material before use. All keys used AES zero key.
+// Fixed by copying key/iv bytes to fresh slices before cleansing buf.
 //
-// This means: any passphrase can decrypt any ciphertext — the passphrase is
-// completely ignored for encryption strength. SEC-K01's random salt provides
-// NO security benefit while this bug exists.
-//
-// CVSS-like impact: CRITICAL for key confidentiality. An attacker with access
-// to the encrypted keystore file can decrypt any key without knowing the passphrase.
-//
-// Fix for J.A.R.V.I.S.: In BytesToKeySHA512AES, copy key/iv bytes before cleanse:
-//   keyCopy := make([]byte, len(key)); copy(keyCopy, key)
-//   ivCopy := make([]byte, len(iv)); copy(ivCopy, iv)
-//   memoryCleanse(buf)
-//   return keyCopy, ivCopy, nil
-func TestSECK02_MemoryCleanse_ZeroesKeyMaterial(t *testing.T) {
+// This test now asserts the fix holds: wrong passphrase + wrong salt must fail.
+func TestSECK02_MemoryCleanse_Fixed(t *testing.T) {
 	ks := newTestStore(t)
 	data := []byte("sensitive-key-material-32-bytes!!")
 
-	// Encrypt with passphrase "alpha"
-	ct, salt, err := ks.EncryptData(data, "alpha")
+	ct, _, err := ks.EncryptData(data, "alpha")
 	if err != nil {
 		t.Fatalf("EncryptData: %v", err)
 	}
 
-	// Attempt to decrypt with completely wrong passphrase and wrong salt
+	// Wrong passphrase + wrong salt must fail (AES-GCM authentication error)
 	wrongSalt := make([]byte, 16)
 	for i := range wrongSalt {
-		wrongSalt[i] = 0xff // definitely different from real salt
+		wrongSalt[i] = 0xff
 	}
 	kpWrong := keyPairForTest(wrongSalt, ct)
 	decWrong, errWrong := ks.DecryptKey(&kpWrong, "totally-wrong-passphrase")
 
-	// SEC-K02: memoryCleanse bug means wrong-pass decryption SUCCEEDS
 	if errWrong == nil && bytes.Equal(decWrong, data) {
-		t.Logf("SEC-K02 CONFIRMED: wrong passphrase ('totally-wrong-passphrase') + wrong salt decrypts correctly")
-		t.Logf("  salt used for encryption: %x", salt)
-		t.Logf("  salt used for decryption: %x", wrongSalt)
-		t.Logf("  This means AES key is not actually derived from passphrase/salt")
-		t.Logf("  ROOT CAUSE: memoryCleanse(buf) in BytesToKeySHA512AES zeroes key/iv slices before return")
-		// This is a documentation test — we log the finding, not fail
-		// Change to t.Error once BytesToKeySHA512AES is fixed
-	} else if errWrong != nil {
-		t.Logf("SEC-K02: not triggered in this run (decryption correctly failed: %v)", errWrong)
-		t.Logf("  If running after SEC-K02 fix, this is correct behavior.")
+		t.Error("SEC-K02 REGRESSION: wrong passphrase + wrong salt decrypted correctly — memoryCleanse bug reintroduced in BytesToKeySHA512AES")
+	} else if errWrong == nil {
+		t.Error("SEC-K02 REGRESSION: DecryptKey returned no error with wrong credentials (but produced different plaintext — AES-GCM tag not enforced)")
 	}
+	// Correct: errWrong != nil (cipher: message authentication failed)
 }
 
 // TestSECK02_CorrectPass_StillWorks verifies the basic encrypt/decrypt with
