@@ -252,6 +252,17 @@ func (s *Server) handleTransaction(c *gin.Context) {
 		return
 	}
 
+	// SEC-S04: Synchronous SanityCheck before async mempool submission.
+	// The mempool's validationProcessor runs SanityCheck asynchronously, meaning
+	// a fingerprint-mismatch (SEC-V05) or other sanity failure would return 200 OK
+	// to the caller even though the tx will be silently dropped into invalidPool.
+	// Run SanityCheck here first for immediate, correct HTTP feedback.
+	if err := tx.SanityCheck(); err != nil {
+		log.Printf("Transaction pre-validation failed from %s: %v", tx.Sender, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction validation failed: %v", err)})
+		return
+	}
+
 	// P3-3: Signature validation — enforce real SPHINCS+ signatures in production.
 	// A placeholder is defined as empty or the literal string "placeholder".
 	sigEmpty := len(tx.Signature) == 0 || string(tx.Signature) == "placeholder"
