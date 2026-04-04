@@ -177,15 +177,21 @@ func (c *CCrypter) BytesToKeySHA512AES(salt, keyData []byte, count int) ([]byte,
 		return nil, nil, errors.New("buffer too small")
 	}
 
-	// Split the final hash buffer into the key and IV.
-	key := buf[:WALLET_CRYPTO_KEY_SIZE]                                              // First 32 bytes for the key.
-	iv := buf[WALLET_CRYPTO_KEY_SIZE : WALLET_CRYPTO_KEY_SIZE+WALLET_CRYPTO_IV_SIZE] // Next 16 bytes for the IV.
+	// SEC-K02 fix: copy key and iv bytes into independent allocations BEFORE
+	// calling memoryCleanse(buf). key and iv are slices of buf — if we zero buf
+	// first, their backing memory is zeroed too and callers receive all-zero
+	// key material regardless of passphrase/salt. This made all DiskKeyStore
+	// encrypted keys use the AES zero key, meaning any passphrase decrypted any key.
+	keyCopy := make([]byte, WALLET_CRYPTO_KEY_SIZE)
+	ivCopy := make([]byte, WALLET_CRYPTO_IV_SIZE)
+	copy(keyCopy, buf[:WALLET_CRYPTO_KEY_SIZE])
+	copy(ivCopy, buf[WALLET_CRYPTO_KEY_SIZE:WALLET_CRYPTO_KEY_SIZE+WALLET_CRYPTO_IV_SIZE])
 
 	// Zero out the buffer to cleanse sensitive data from memory.
 	memoryCleanse(buf)
 
-	// Return the derived key and IV.
-	return key, iv, nil
+	// Return independent copies — safe to use after buf is zeroed.
+	return keyCopy, ivCopy, nil
 }
 
 // SetKeyFromPassphrase: Derives an encryption key and initialization vector (IV) from the provided passphrase (keyData) and salt.
