@@ -31,6 +31,7 @@ import (
 	"github.com/ramseyauron/quantix/src/core"
 	types "github.com/ramseyauron/quantix/src/core/transaction"
 	security "github.com/ramseyauron/quantix/src/handshake"
+	sign "github.com/ramseyauron/quantix/src/core/sphincs/sign/backend"
 )
 
 // Server represents an HTTP server.
@@ -51,9 +52,15 @@ type Server struct {
 	readyCh              chan struct{}
 	consensusValidatorSet ValidatorRegistrar // P2-6: optional consensus validator set
 	faucetLimiter        sync.Map           // P2-FAUCET: map[address]time.Time last request
+	sphincsMgr           *sign.SphincsManager // P3-5: optional SPHINCS+ manager for sig verification
 }
 
 // SetConsensusValidatorSet wires the consensus validator set to the HTTP server (P2-6).
 func (s *Server) SetConsensusValidatorSet(vr ValidatorRegistrar) {
 	s.consensusValidatorSet = vr
+}
+
+// SetSphincsMgr wires a SphincsManager into the HTTP server for P3-5 sig verification.
+func (s *Server) SetSphincsMgr(mgr *sign.SphincsManager) {
+	s.sphincsMgr = mgr
 }

@@ -25,6 +25,7 @@ package http
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/big"
@@ -39,6 +40,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ramseyauron/quantix/src/core"
+	key "github.com/ramseyauron/quantix/src/core/sphincs/key/backend"
 	types "github.com/ramseyauron/quantix/src/core/transaction"
 	security "github.com/ramseyauron/quantix/src/handshake"
 )
@@ -261,6 +263,15 @@ func (s *Server) handleTransaction(c *gin.Context) {
 		}
 	}
 
+	// P3-5: If signature is provided and NOT dev-mode, attempt SPHINCS+ verification.
+	if !sigEmpty && !s.blockchain.IsDevMode() && s.sphincsMgr != nil {
+		s.verifyTransactionSignature(c, &tx)
+		// verifyTransactionSignature writes the response on hard failure; check if response was sent
+		if c.IsAborted() {
+			return
+		}
+	}
+
 	if err := s.blockchain.AddTransaction(&tx); err != nil {
 		log.Printf("Transaction add error: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to add transaction: %v", err)})
@@ -277,6 +288,78 @@ func (s *Server) handleTransaction(c *gin.Context) {
 	s.lastTxMutex.Unlock()
 
 	c.JSON(http.StatusOK, gin.H{"status": "Transaction submitted"})
+}
+
+// verifyTransactionSignature attempts SPHINCS+ verification for P3-5.
+// Aborts the gin context with 400 if verification fails (and pubkey is known).
+// If pubkey is not found for sender, logs a warning but does NOT abort.
+func (s *Server) verifyTransactionSignature(c *gin.Context, tx *types.Transaction) {
+	// Step 1: attempt to find sender's public key from validator registry
+	validators, err := s.blockchain.GetValidators()
+	if err != nil || len(validators) == 0 {
+		log.Printf("[P3-5] No validator registry — accepting tx from %s without sig verification", tx.Sender)
+		return
+	}
+
+	var senderPubKeyHex string
+	for _, v := range validators {
+		if v.NodeAddress == tx.Sender || v.PublicKey == tx.Sender {
+			senderPubKeyHex = v.PublicKey
+			break
+		}
+	}
+
+	if senderPubKeyHex == "" {
+		log.Printf("[P3-5] No pubkey found for sender %s — accepting tx (forward-compatible)", tx.Sender)
+		return
+	}
+
+	// Step 2: decode pubkey hex
+	pubKeyBytes, err := hex.DecodeString(senderPubKeyHex)
+	if err != nil {
+		log.Printf("[P3-5] Failed to decode pubkey for %s: %v — accepting tx", tx.Sender, err)
+		return
+	}
+
+	// Step 3: deserialize pubkey
+	km, err := key.NewKeyManager()
+	if err != nil {
+		log.Printf("[P3-5] KeyManager init failed: %v — accepting tx", err)
+		return
+	}
+	pk, err := km.DeserializePublicKey(pubKeyBytes)
+	if err != nil {
+		log.Printf("[P3-5] Pubkey deserialization failed for %s: %v — accepting tx", tx.Sender, err)
+		return
+	}
+
+	// Step 4: deserialize the SPHINCS+ signature
+	sig, err := s.sphincsMgr.DeserializeSignature(tx.Signature)
+	if err != nil {
+		log.Printf("[P3-5] Signature deserialization failed from %s: %v", tx.Sender, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid signature format"})
+		c.Abort()
+		return
+	}
+
+	// Step 5: reconstruct signed message (tx.ID as canonical identifier)
+	// The client must sign tx.ID (or the canonical tx bytes).
+	msgBytes := []byte(tx.ID)
+	if tx.ID == "" {
+		// Fall back to sender+receiver+amount+nonce as message
+		msgBytes = []byte(fmt.Sprintf("%s:%s:%s:%d", tx.Sender, tx.Receiver, tx.Amount.String(), tx.Nonce))
+	}
+
+	// Step 6: verify using VerifySignature (timestamp/nonce/commitment are empty for this simplified check)
+	ok := s.sphincsMgr.VerifySignature(msgBytes, nil, nil, sig, pk, nil, make([]byte, 32))
+	if !ok {
+		log.Printf("[P3-5] Signature verification FAILED for tx from %s — REJECTING", tx.Sender)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "signature verification failed"})
+		c.Abort()
+		return
+	}
+
+	log.Printf("[P3-5] Signature verified for tx from %s", tx.Sender)
 }
 
 func (s *Server) handleGetBlock(c *gin.Context) {
