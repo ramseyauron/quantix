@@ -560,24 +560,15 @@ func (s *Server) iterativeFindNode(targetID network.NodeID) {
 }
 
 // tryTCPSeedFallback attempts a direct TCP connection to a seed node.
-// FIX-P2P-02: used when UDP discovery fails for loopback/localhost seeds.
+// FIX-P2P-02/P3-4: used when UDP discovery fails.
+// Works for any seed address — loopback or public IP.
 // Returns true if connection succeeded and peer was registered.
 func (s *Server) tryTCPSeedFallback(seedAddr string) bool {
-	// Only try TCP fallback if the seed is a loopback address
-	host, _, err := net.SplitHostPort(seedAddr)
-	if err != nil {
-		return false
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return false
-	}
-
-	log.Printf("FIX-P2P-02: UDP failed for loopback seed %s — trying TCP fallback", seedAddr)
+	log.Printf("P3-4: UDP failed for seed %s — trying TCP fallback", seedAddr)
 
 	conn, err := net.DialTimeout("tcp", seedAddr, 3*time.Second)
 	if err != nil {
-		log.Printf("FIX-P2P-02: TCP fallback to %s failed: %v", seedAddr, err)
+		log.Printf("P3-4: TCP fallback to %s failed: %v", seedAddr, err)
 		return false
 	}
 	conn.Close()
@@ -585,14 +576,15 @@ func (s *Server) tryTCPSeedFallback(seedAddr string) bool {
 	// TCP reachable — register as a peer node so the rest of the system sees it
 	seedNode := &network.Node{
 		Address: seedAddr,
+		ID:      seedAddr, // temporary ID; updated on verack
 		Role:    network.RoleNone,
 		Status:  network.NodeStatusActive,
 	}
 	if err := s.peerManager.ConnectPeer(seedNode); err != nil {
-		log.Printf("FIX-P2P-02: TCP fallback peer register %s failed: %v", seedAddr, err)
+		log.Printf("P3-4: TCP fallback peer register %s failed: %v", seedAddr, err)
 		return false
 	}
-	log.Printf("FIX-P2P-02: TCP fallback to %s succeeded — peer registered", seedAddr)
+	log.Printf("P3-4: TCP fallback to %s succeeded — peer registered", seedAddr)
 	return true
 }
 
