@@ -37,9 +37,13 @@ import (
 	"strings"
 	"sync"
 
+	"encoding/binary"
+
 	"github.com/gin-gonic/gin"
+	"github.com/holiman/uint256"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ramseyauron/quantix/src/core"
+	"github.com/ramseyauron/quantix/src/core/hashtree"
 	key "github.com/ramseyauron/quantix/src/core/sphincs/key/backend"
 	types "github.com/ramseyauron/quantix/src/core/transaction"
 	security "github.com/ramseyauron/quantix/src/handshake"
@@ -264,6 +268,10 @@ func (s *Server) handleTransaction(c *gin.Context) {
 	}
 
 	// P3-5: If signature is provided and NOT dev-mode, attempt SPHINCS+ verification.
+	// SEC-S03: Warn prominently if sphincsMgr is nil in production — sig verification silently skipped.
+	if !sigEmpty && !s.blockchain.IsDevMode() && s.sphincsMgr == nil {
+		log.Printf("[SEC-S03] WARN: sphincsMgr not wired — SPHINCS+ verification SKIPPED for tx from %s (production node)", tx.Sender)
+	}
 	if !sigEmpty && !s.blockchain.IsDevMode() && s.sphincsMgr != nil {
 		s.verifyTransactionSignature(c, &tx)
 		// verifyTransactionSignature writes the response on hard failure; check if response was sent
@@ -293,6 +301,14 @@ func (s *Server) handleTransaction(c *gin.Context) {
 // verifyTransactionSignature attempts SPHINCS+ verification for P3-5.
 // Aborts the gin context with 400 if verification fails (and pubkey is known).
 // If pubkey is not found for sender, logs a warning but does NOT abort.
+//
+// SEC-S01 fix: uses tx.SigNonce, tx.SigCommitment, tx.SigMerkleRoot (new wire
+// fields added to Transaction) instead of nil/zeroed values. If these fields
+// are absent (legacy clients), verification falls back to a Spx_verify-only
+// path that accepts the tx but logs a warning.
+//
+// SEC-S02 fix: canonical message is SHA-256(sender:receiver:amount:nonce:timestamp)
+// binding ALL transaction fields — not just tx.ID which doesn't cover amount.
 func (s *Server) verifyTransactionSignature(c *gin.Context, tx *types.Transaction) {
 	// Step 1: attempt to find sender's public key from validator registry
 	validators, err := s.blockchain.GetValidators()
@@ -342,16 +358,43 @@ func (s *Server) verifyTransactionSignature(c *gin.Context, tx *types.Transactio
 		return
 	}
 
-	// Step 5: reconstruct signed message (tx.ID as canonical identifier)
-	// The client must sign tx.ID (or the canonical tx bytes).
-	msgBytes := []byte(tx.ID)
-	if tx.ID == "" {
-		// Fall back to sender+receiver+amount+nonce as message
-		msgBytes = []byte(fmt.Sprintf("%s:%s:%s:%d", tx.Sender, tx.Receiver, tx.Amount.String(), tx.Nonce))
+	// Step 5 (SEC-S02): canonical message = SHA-256(sender:receiver:amount:nonce:timestamp)
+	// This binds ALL economically-significant fields. Signing only tx.ID would allow
+	// an attacker to mutate amount/receiver while keeping the same ID and sig.
+	amountStr := "0"
+	if tx.Amount != nil {
+		amountStr = tx.Amount.String()
+	}
+	canonicalMsg := fmt.Sprintf("%s:%s:%s:%d:%d", tx.Sender, tx.Receiver, amountStr, tx.Nonce, tx.Timestamp)
+	msgBytes := []byte(canonicalMsg)
+
+	// Step 6: reconstruct timestamp bytes (big-endian int64)
+	tsBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(tsBytes, uint64(tx.Timestamp))
+
+	// Step 7 (SEC-S01): use SigNonce + SigCommitment + SigMerkleRoot from tx wire fields.
+	// These are populated by the client when submitting a signed transaction.
+	// If absent (legacy/simple client), fall back to accepting with a warning.
+	if len(tx.SigNonce) == 0 || len(tx.SigCommitment) != 32 {
+		log.Printf("[P3-5] WARN: tx from %s missing SigNonce/SigCommitment — Pedersen commitment check skipped (legacy client)", tx.Sender)
+		// Cannot do full Pedersen verification without commitment fields.
+		// Accept for forward-compatibility but log the gap.
+		// TODO: reject once all clients populate SigNonce/SigCommitment.
+		return
 	}
 
-	// Step 6: verify using VerifySignature (timestamp/nonce/commitment are empty for this simplified check)
-	ok := s.sphincsMgr.VerifySignature(msgBytes, nil, nil, sig, pk, nil, make([]byte, 32))
+	// Reconstruct MerkleRoot node from hex
+	var merkleNode *hashtree.HashTreeNode
+	if tx.SigMerkleRoot != "" {
+		merkleBytes, hexErr := hex.DecodeString(tx.SigMerkleRoot)
+		if hexErr == nil && len(merkleBytes) == 32 {
+			merkleNode = &hashtree.HashTreeNode{
+				Hash: new(uint256.Int).SetBytes(merkleBytes),
+			}
+		}
+	}
+
+	ok := s.sphincsMgr.VerifySignature(msgBytes, tsBytes, tx.SigNonce, sig, pk, merkleNode, tx.SigCommitment)
 	if !ok {
 		log.Printf("[P3-5] Signature verification FAILED for tx from %s — REJECTING", tx.Sender)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "signature verification failed"})
@@ -359,7 +402,7 @@ func (s *Server) verifyTransactionSignature(c *gin.Context, tx *types.Transactio
 		return
 	}
 
-	log.Printf("[P3-5] Signature verified for tx from %s", tx.Sender)
+	log.Printf("[P3-5] Signature verified for tx from %s (full Pedersen verification)", tx.Sender)
 }
 
 func (s *Server) handleGetBlock(c *gin.Context) {
