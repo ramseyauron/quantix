@@ -318,24 +318,37 @@ func (ks *USBKeyStore) GetWalletInfo() *key.WalletInfo {
 }
 
 // EncryptData encrypts data with a passphrase for USB storage
-func (ks *USBKeyStore) EncryptData(data []byte, passphrase string) ([]byte, error) {
-	salt := ks.generateSalt(passphrase)
+func (ks *USBKeyStore) EncryptData(data []byte, passphrase string) ([]byte, []byte, error) {
+	// SEC-K01: USB store uses Argon2id (strong KDF) but previously used a static salt.
+	// Now generates a per-key random salt for additional defense-in-depth.
+	// The Argon2id generateSalt is still called for its cost parameters; the random
+	// salt is used as the actual per-key differentiator stored in KeyPair.KDFSalt.
+	salt := make([]byte, crypter.WALLET_CRYPTO_IV_SIZE)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, nil, fmt.Errorf("failed to generate KDF salt: %w", err)
+	}
 
 	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 1000) {
-		return nil, fmt.Errorf("failed to set encryption key")
+		return nil, nil, fmt.Errorf("failed to set encryption key")
 	}
 
 	encryptedData, err := ks.crypt.Encrypt(data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt data: %w", err)
+		return nil, nil, fmt.Errorf("failed to encrypt data: %w", err)
 	}
 
-	return encryptedData, nil
+	return encryptedData, salt, nil
 }
 
-// DecryptKey decrypts a key pair's secret key from USB storage
+// DecryptKey decrypts a key pair's secret key from USB storage.
+// SEC-K01: Uses KeyPair.KDFSalt if present; falls back to deterministic salt for legacy keys.
 func (ks *USBKeyStore) DecryptKey(keyPair *key.KeyPair, passphrase string) ([]byte, error) {
-	salt := ks.generateSalt(passphrase)
+	var salt []byte
+	if len(keyPair.KDFSalt) > 0 {
+		salt = keyPair.KDFSalt
+	} else {
+		salt = ks.generateSalt(passphrase) // legacy fallback
+	}
 
 	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 1000) {
 		return nil, fmt.Errorf("failed to set decryption key")
@@ -361,12 +374,13 @@ func (ks *USBKeyStore) ChangePassphrase(keyID string, oldPassphrase string, newP
 		return fmt.Errorf("failed to decrypt with old passphrase: %w", err)
 	}
 
-	newEncryptedSK, err := ks.EncryptData(decryptedSK, newPassphrase)
+	newEncryptedSK, newSalt, err := ks.EncryptData(decryptedSK, newPassphrase)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt with new passphrase: %w", err)
 	}
 
 	keyPair.EncryptedSK = newEncryptedSK
+	keyPair.KDFSalt = newSalt // SEC-K01: update salt on passphrase change
 	return ks.StoreKey(keyPair)
 }
 

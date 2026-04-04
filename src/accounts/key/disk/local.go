@@ -112,12 +112,18 @@ func (ks *DiskKeyStore) StoreEncryptedKey(encryptedSK, publicKey []byte, address
 // StoreRawKey stores a raw key pair and encrypts it with the provided passphrase
 func (ks *DiskKeyStore) StoreRawKey(secretKey, publicKey []byte, address string, walletType key.HardwareWalletType, chainID uint64, derivationPath string, passphrase string, metadata map[string]interface{}) (*key.KeyPair, error) { // Changed receiver type
 	// Encrypt the secret key
-	encryptedSK, err := ks.EncryptData(secretKey, passphrase)
+	encryptedSK, kdfSalt, err := ks.EncryptData(secretKey, passphrase)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt secret key: %w", err)
 	}
 
-	return ks.StoreEncryptedKey(encryptedSK, publicKey, address, walletType, chainID, derivationPath, metadata)
+	kp, err := ks.StoreEncryptedKey(encryptedSK, publicKey, address, walletType, chainID, derivationPath, metadata)
+	if err != nil {
+		return nil, err
+	}
+	// SEC-K01: persist the per-key random salt
+	kp.KDFSalt = kdfSalt
+	return kp, ks.StoreKey(kp)
 }
 
 // GetKey retrieves a key pair by ID
@@ -207,27 +213,47 @@ func (ks *DiskKeyStore) RemoveKey(keyID string) error { // Changed receiver type
 	return nil
 }
 
-// EncryptData encrypts data with a passphrase
-func (ks *DiskKeyStore) EncryptData(data []byte, passphrase string) ([]byte, error) { // Changed receiver type
-	salt := ks.generateSalt(passphrase)
+// EncryptData encrypts data with a passphrase and a random per-key salt.
+// SEC-K01: salt is generated with crypto/rand at call time and returned to the caller.
+// The caller must persist the salt in KeyPair.KDFSalt alongside the ciphertext.
+// Iterations bumped from 1000 → 100000 for adequate brute-force resistance.
+func (ks *DiskKeyStore) EncryptData(data []byte, passphrase string) ([]byte, []byte, error) {
+	salt := make([]byte, crypter.WALLET_CRYPTO_IV_SIZE)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, nil, fmt.Errorf("failed to generate KDF salt: %w", err)
+	}
 
-	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 1000) {
-		return nil, fmt.Errorf("failed to set encryption key")
+	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 100000) {
+		return nil, nil, fmt.Errorf("failed to set encryption key")
 	}
 
 	encryptedData, err := ks.crypt.Encrypt(data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt data: %w", err)
+		return nil, nil, fmt.Errorf("failed to encrypt data: %w", err)
 	}
 
-	return encryptedData, nil
+	return encryptedData, salt, nil
 }
 
-// DecryptKey decrypts a key pair's secret key
-func (ks *DiskKeyStore) DecryptKey(keyPair *key.KeyPair, passphrase string) ([]byte, error) { // Changed receiver type
-	salt := ks.generateSalt(passphrase)
+// DecryptKey decrypts a key pair's secret key.
+// SEC-K01: Uses KeyPair.KDFSalt (random per-key salt) if present; falls back to
+// legacy deterministic salt for backward compatibility with keys stored before this fix.
+func (ks *DiskKeyStore) DecryptKey(keyPair *key.KeyPair, passphrase string) ([]byte, error) {
+	var salt []byte
+	if len(keyPair.KDFSalt) > 0 {
+		salt = keyPair.KDFSalt
+	} else {
+		// Legacy fallback: deterministic salt for keys created before SEC-K01 fix.
+		// These keys use 1000 iterations; new keys use 100000.
+		salt = ks.generateSalt(passphrase)
+	}
 
-	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 1000) {
+	iterations := uint(100000)
+	if len(keyPair.KDFSalt) == 0 {
+		iterations = 1000 // legacy keys used 1000 rounds
+	}
+
+	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, iterations) {
 		return nil, fmt.Errorf("failed to set decryption key")
 	}
 
@@ -251,12 +277,13 @@ func (ks *DiskKeyStore) ChangePassphrase(keyID string, oldPassphrase string, new
 		return fmt.Errorf("failed to decrypt with old passphrase: %w", err)
 	}
 
-	newEncryptedSK, err := ks.EncryptData(decryptedSK, newPassphrase)
+	newEncryptedSK, newSalt, err := ks.EncryptData(decryptedSK, newPassphrase)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt with new passphrase: %w", err)
 	}
 
 	keyPair.EncryptedSK = newEncryptedSK
+	keyPair.KDFSalt = newSalt // SEC-K01: update stored salt on passphrase change
 	return ks.StoreKey(keyPair)
 }
 
