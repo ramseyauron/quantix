@@ -92,10 +92,22 @@ type Transaction struct {
 	Fingerprint string   `json:"fingerprint,omitempty"` // USI fingerprint of sender (SHA-256 of SPHINCS+ pubkey)
 
 	// SEC-S01: SPHINCS+ signing metadata — required for full Pedersen commitment verification.
-	// Set by the client when submitting a signed transaction.
-	// SigNonce is the 16-byte random blinding factor used in SignMessage (not the tx sequence nonce).
-	// SigCommitment is the 32-byte Pedersen commitment c = SigCommitment(sigBytes, pkBytes, ts, nonce, msg).
-	// SigMerkleRoot is the hex-encoded Merkle root from SignMessage.
+	// All four fields are returned by SignMessage and must be populated by the client.
+	//
+	// Signing protocol (client side):
+	//   1. Build canonical message: SHA-256 preimage = "sender:receiver:amount:nonce"
+	//      (tx.Timestamp is the block-inclusion timestamp, NOT the signing timestamp)
+	//   2. Call SignMessage(canonicalMsgBytes, sk, pk)
+	//      → returns (sig, merkleRoot, tsBytes, nonceBytes, commitment, err)
+	//   3. Set SigTimestamp = tsBytes   (8-byte big-endian Unix seconds from SignMessage)
+	//   4. Set SigNonce     = nonceBytes (16-byte crypto/rand blinding factor)
+	//   5. Set SigCommitment = commitment (32-byte Pedersen commitment)
+	//   6. Set SigMerkleRoot = hex(merkleRoot.Hash.Bytes())
+	//   7. Set Signature    = serialized sig bytes
+	//
+	// NOTE: tx.Timestamp is the block-inclusion time set by the node/mempool,
+	// NOT the signing timestamp. Do not confuse these two values.
+	SigTimestamp  []byte `json:"sig_timestamp,omitempty"`   // 8-byte big-endian signing timestamp from SignMessage
 	SigNonce      []byte `json:"sig_nonce,omitempty"`       // 16-byte signing nonce (crypto/rand)
 	SigCommitment []byte `json:"sig_commitment,omitempty"`  // 32-byte Pedersen commitment
 	SigMerkleRoot string `json:"sig_merkle_root,omitempty"` // hex-encoded Merkle root
