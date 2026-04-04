@@ -13,6 +13,12 @@ services:
       - ./data/devnet:/app/data
     environment:
       - QUANTIX_ENV=devnet
+      - QUANTIX_NETWORK=devnet
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2"
     command:
       - -nodes
       - "1"
