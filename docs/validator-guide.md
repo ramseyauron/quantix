@@ -42,11 +42,24 @@
 
 ### Open Ports
 
-| Port | Protocol | Purpose |
-|---|---|---|
-| 8560 | TCP | HTTP RPC API |
-| 8700 | TCP | WebSocket |
-| 32307 | TCP/UDP | P2P networking |
+| Port | Protocol | Purpose | Exposure |
+|---|---|---|---|
+| 8560 | TCP | HTTP RPC API | 🔒 Restrict to trusted IPs in production |
+| 8700 | TCP | WebSocket | 🔒 Restrict to trusted IPs in production |
+| 32307 | TCP/UDP | P2P networking | 🌐 Public (required for peer discovery) |
+
+> ⚠️ **SEC-D01 — Production Firewall Required**: The HTTP RPC port (8560) and WebSocket
+> port (8700) must **not** be publicly exposed in production. Use `ufw` or `iptables` to
+> restrict these ports to trusted operator IPs only. Only port 32307 (P2P) should be
+> publicly accessible.
+>
+> ```bash
+> # Example: restrict RPC to a single operator IP
+> sudo ufw allow from <YOUR_OPERATOR_IP> to any port 8560
+> sudo ufw allow from <YOUR_OPERATOR_IP> to any port 8700
+> sudo ufw allow 32307  # P2P must be public
+> sudo ufw enable
+> ```
 
 ---
 
@@ -193,7 +206,7 @@ docker compose -f docker-compose-monitoring.yml up -d
 
 This starts:
 - **Prometheus** → `http://localhost:9090`  
-- **Grafana** → `http://localhost:3000` (default: `admin` / `admin`)
+- **Grafana** → `http://localhost:3000` (default: `admin` / `admin`) — ⚠️ **Change the default password immediately** (`admin` → strong password) before exposing Grafana to any network
 
 ### 5.2 Import the Dashboard
 
