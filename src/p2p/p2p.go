@@ -675,6 +675,29 @@ func (s *Server) handleMessages() {
 				log.Printf("gossip_block: unexpected data type %T", msg.Data)
 			}
 
+		case "consensus_msg":
+			// P2-PBFT: route consensus messages (proposal/vote/prepare/timeout) to engine.
+			// Data arrives as string (JSON envelope) from JSON deserialization.
+			var rawBytes []byte
+			switch v := msg.Data.(type) {
+			case string:
+				rawBytes = []byte(v)
+			case []byte:
+				rawBytes = v
+			default:
+				// Try JSON re-encode
+				if b, err := json.Marshal(msg.Data); err == nil {
+					rawBytes = b
+				}
+			}
+			if rawBytes != nil && s.consensus != nil {
+				if err := RouteConsensusMessage(rawBytes, s.consensus); err != nil {
+					log.Printf("consensus_msg: route error: %v", err)
+				}
+			} else if s.consensus == nil {
+				log.Printf("consensus_msg: consensus not initialized, dropping")
+			}
+
 		case "gossip_tx":
 			// FIX-P2P-05: handle incoming transaction from peer gossip
 			// FIX-P2P-GOSSIP2: handle map[string]interface{} from JSON deserialization
