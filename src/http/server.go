@@ -247,6 +247,20 @@ func (s *Server) handleTransaction(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid transaction format: %v", err)})
 		return
 	}
+
+	// P3-3: Signature validation — enforce real SPHINCS+ signatures in production.
+	// A placeholder is defined as empty or the literal string "placeholder".
+	sigEmpty := len(tx.Signature) == 0 || string(tx.Signature) == "placeholder"
+	if sigEmpty {
+		if s.blockchain.IsDevMode() {
+			log.Printf("[WARN] Dev-mode: accepting transaction from %s with empty/placeholder signature", tx.Sender)
+		} else {
+			log.Printf("Transaction rejected: missing or placeholder signature from %s", tx.Sender)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "transaction signature is required in production mode"})
+			return
+		}
+	}
+
 	if err := s.blockchain.AddTransaction(&tx); err != nil {
 		log.Printf("Transaction add error: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to add transaction: %v", err)})
