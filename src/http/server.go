@@ -37,8 +37,6 @@ import (
 	"strings"
 	"sync"
 
-	"encoding/binary"
-
 	"github.com/gin-gonic/gin"
 	"github.com/holiman/uint256"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -358,30 +356,32 @@ func (s *Server) verifyTransactionSignature(c *gin.Context, tx *types.Transactio
 		return
 	}
 
-	// Step 5 (SEC-S02): canonical message = SHA-256(sender:receiver:amount:nonce:timestamp)
-	// This binds ALL economically-significant fields. Signing only tx.ID would allow
-	// an attacker to mutate amount/receiver while keeping the same ID and sig.
+	// Step 5 (SEC-S02): canonical message = "sender:receiver:amount:nonce"
+	// This binds all economically-significant fields.
+	// NOTE: tx.Timestamp is the block-inclusion time (set by the node/mempool), NOT the
+	// signing timestamp. Including tx.Timestamp here would cause verification to always
+	// fail because clients sign before block inclusion and don't know the final ts.
+	// The signing timestamp is carried separately in tx.SigTimestamp.
 	amountStr := "0"
 	if tx.Amount != nil {
 		amountStr = tx.Amount.String()
 	}
-	canonicalMsg := fmt.Sprintf("%s:%s:%s:%d:%d", tx.Sender, tx.Receiver, amountStr, tx.Nonce, tx.Timestamp)
+	canonicalMsg := fmt.Sprintf("%s:%s:%s:%d", tx.Sender, tx.Receiver, amountStr, tx.Nonce)
 	msgBytes := []byte(canonicalMsg)
 
-	// Step 6: reconstruct timestamp bytes (big-endian int64)
-	tsBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(tsBytes, uint64(tx.Timestamp))
-
-	// Step 7 (SEC-S01): use SigNonce + SigCommitment + SigMerkleRoot from tx wire fields.
-	// These are populated by the client when submitting a signed transaction.
-	// If absent (legacy/simple client), fall back to accepting with a warning.
-	if len(tx.SigNonce) == 0 || len(tx.SigCommitment) != 32 {
-		log.Printf("[P3-5] WARN: tx from %s missing SigNonce/SigCommitment — Pedersen commitment check skipped (legacy client)", tx.Sender)
-		// Cannot do full Pedersen verification without commitment fields.
+	// Step 6 (SEC-S01-fix2): use SigTimestamp from tx wire field — NOT tx.Timestamp.
+	// SignMessage generates its own internal timestamp (generateTimestamp) which differs
+	// from tx.Timestamp (block-inclusion time). Using the wrong timestamp would cause
+	// all VerifySignature calls to fail since the reconstructed payload wouldn't match.
+	// SigTimestamp is the 8-byte big-endian timestamp returned by SignMessage.
+	if len(tx.SigNonce) == 0 || len(tx.SigCommitment) != 32 || len(tx.SigTimestamp) != 8 {
+		log.Printf("[P3-5] WARN: tx from %s missing SigTimestamp/SigNonce/SigCommitment — Pedersen commitment check skipped (legacy client)", tx.Sender)
+		// Cannot do full Pedersen verification without signing metadata.
 		// Accept for forward-compatibility but log the gap.
-		// TODO: reject once all clients populate SigNonce/SigCommitment.
+		// TODO: reject once all clients populate SigTimestamp/SigNonce/SigCommitment.
 		return
 	}
+	tsBytes := tx.SigTimestamp
 
 	// Reconstruct MerkleRoot node from hex
 	var merkleNode *hashtree.HashTreeNode
