@@ -90,6 +90,15 @@ type Transaction struct {
 	Timestamp   int64    `json:"timestamp"`
 	Signature   []byte   `json:"signature"`
 	Fingerprint string   `json:"fingerprint,omitempty"` // USI fingerprint of sender (SHA-256 of SPHINCS+ pubkey)
+
+	// SEC-S01: SPHINCS+ signing metadata — required for full Pedersen commitment verification.
+	// Set by the client when submitting a signed transaction.
+	// SigNonce is the 16-byte random blinding factor used in SignMessage (not the tx sequence nonce).
+	// SigCommitment is the 32-byte Pedersen commitment c = SigCommitment(sigBytes, pkBytes, ts, nonce, msg).
+	// SigMerkleRoot is the hex-encoded Merkle root from SignMessage.
+	SigNonce      []byte `json:"sig_nonce,omitempty"`       // 16-byte signing nonce (crypto/rand)
+	SigCommitment []byte `json:"sig_commitment,omitempty"`  // 32-byte Pedersen commitment
+	SigMerkleRoot string `json:"sig_merkle_root,omitempty"` // hex-encoded Merkle root
 }
 
 // Outpoint represents a specific transaction output.
