@@ -23,7 +23,6 @@
 package auth
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"encoding/base32"
 	"fmt"
@@ -127,11 +126,9 @@ func VerifyFingerPrint(Base32Passkey, passphrase string) (bool, error) {
 		return false, fmt.Errorf("no stored fingerprint found for the provided passphrase and Base32 passkey")
 	}
 
-	// Print the found fingerprint value for debugging
-	fmt.Printf("Found Fingerprint: %x\n", storedFingerprint)
-
-	// Compare the generated fingerprint with the stored fingerprint
-	if !bytes.Equal(generatedFingerprint, storedFingerprint) {
+	// SEC-W01: Use hmac.Equal (constant-time) to prevent timing oracle attacks.
+	// SEC-W02: Removed debug Printf that leaked fingerprint to stdout.
+	if !hmac.Equal(generatedFingerprint, storedFingerprint) {
 		// If they do not match, verification fails
 		return false, fmt.Errorf("fingerprint mismatch")
 	}

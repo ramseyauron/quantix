@@ -55,6 +55,7 @@ package fingerprint
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -112,8 +113,10 @@ func (fp Fingerprint) Bytes() []byte {
 }
 
 // Equal returns true if two Fingerprints represent the same identity.
+// SEC-W03: Uses constant-time comparison to prevent timing oracle attacks
+// when fingerprints are used in authentication contexts.
 func (fp Fingerprint) Equal(other Fingerprint) bool {
-	return fp == other
+	return subtle.ConstantTimeCompare(fp[:], other[:]) == 1
 }
 
 // IsZero returns true if the Fingerprint is the zero value (unset).
