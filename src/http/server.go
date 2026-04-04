@@ -451,13 +451,16 @@ type ValidatorRegisterRequest struct {
 // SEC-P03: gated behind VALIDATOR_REGISTER_SECRET env var (same pattern as /mine).
 func (s *Server) handleValidatorRegister(c *gin.Context) {
 	secret := os.Getenv("VALIDATOR_REGISTER_SECRET")
-	if secret == "" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "validator registration disabled: VALIDATOR_REGISTER_SECRET not configured"})
-		return
-	}
-	if c.GetHeader("X-Register-Secret") != secret {
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid register secret"})
-		return
+	// P2-PBFT: in dev-mode, skip secret check to allow auto-registration in testnet.
+	if !s.blockchain.IsDevMode() {
+		if secret == "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "validator registration disabled: VALIDATOR_REGISTER_SECRET not configured"})
+			return
+		}
+		if c.GetHeader("X-Register-Secret") != secret {
+			c.JSON(http.StatusForbidden, gin.H{"error": "invalid register secret"})
+			return
+		}
 	}
 
 	var req ValidatorRegisterRequest

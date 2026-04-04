@@ -39,7 +39,10 @@ import (
 	"syscall"
 	"time"
 
+	"math/big"
+
 	"github.com/ramseyauron/quantix/src/common"
+	"github.com/ramseyauron/quantix/src/consensus"
 	"github.com/ramseyauron/quantix/src/core"
 	database "github.com/ramseyauron/quantix/src/core/state"
 	config "github.com/ramseyauron/quantix/src/core/sphincs/config"
@@ -167,6 +170,93 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		log.Printf("⚠️  Dev-mode enabled for %s: balance checks skipped", nodeConfig.Name)
 	}
 
+	// P2-PBFT: Initialize and wire consensus engine to P2P layer.
+	var pbftConsensus *consensus.Consensus
+	{
+		bc := resources[0].Blockchain
+		p2pSrv := resources[0].P2PServer
+
+		// Register VDF genesis hash provider (safe to call multiple times — only first call wins).
+		bcRef := bc
+		consensus.InitVDFFromGenesis(func() (string, error) {
+			latest := bcRef.GetLatestBlock()
+			if latest == nil {
+				return "", fmt.Errorf("no blocks in storage")
+			}
+			if latest.GetHeight() == 0 {
+				return latest.GetHash(), nil
+			}
+			current := latest.GetHash()
+			for {
+				block := bcRef.GetBlockByHash(current)
+				if block == nil {
+					return "", fmt.Errorf("chain traversal broken at %s", current)
+				}
+				if block.GetHeight() == 0 {
+					return block.GetHash(), nil
+				}
+				current = block.GetPrevHash()
+			}
+		})
+
+		// Build SPHINCS+ signing service for this node.
+		nodeID := p2pSrv.LocalNode().ID
+		km, err := key.NewKeyManager()
+		if err != nil {
+			return fmt.Errorf("P2-PBFT: key manager: %v", err)
+		}
+		sp, err := config.NewSPHINCSParameters()
+		if err != nil {
+			return fmt.Errorf("P2-PBFT: sphincs params: %v", err)
+		}
+		sm := sign.NewSphincsManager(db, km, sp)
+		sigSvc := consensus.NewSigningService(sm, km, nodeID)
+		if pk := sigSvc.GetPublicKeyObject(); pk != nil {
+			sigSvc.RegisterPublicKey(nodeID, pk)
+		}
+
+		// Build P2P-backed node manager so consensus messages go over TCP.
+		p2pNM := p2p.NewP2PNodeManager(p2pSrv.NodeManager())
+
+		// Minimum stake from chain parameters.
+		coreParams := core.GetQuantixChainParams()
+		minStake := coreParams.ConsensusConfig.MinStakeAmount
+		if minStake == nil {
+			minStake = new(big.Int).Mul(big.NewInt(32), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+		}
+
+		cons := consensus.NewConsensus(nodeID, p2pNM, bc, sigSvc, nil, minStake)
+		if cons == nil {
+			log.Printf("⚠️  P2-PBFT: NewConsensus returned nil — PBFT disabled for %s", nodeName)
+		} else {
+			// Dev-mode: skip SPHINCS+ sig verification on votes/proposals.
+			if nodeConfig.DevMode {
+				cons.SetDevMode(true)
+			}
+
+			// Add self as validator with minimum stake.
+			if vs := cons.GetValidatorSet(); vs != nil {
+				_ = vs.AddValidator(nodeID, vs.GetMinStakeSPX())
+			}
+
+			// Wire consensus engine to blockchain and P2P server.
+			bc.SetConsensusEngine(cons)
+			bc.SetConsensus(cons)
+			p2pSrv.InitializeConsensus(cons)
+
+			// Register with the in-memory registry so local delivery also works.
+			network.RegisterConsensus(nodeID, cons)
+
+			// Start the consensus engine.
+			if err := cons.Start(); err != nil {
+				log.Printf("⚠️  P2-PBFT: consensus.Start failed: %v", err)
+			} else {
+				pbftConsensus = cons
+				log.Printf("✅ P2-PBFT: consensus engine started for %s (dev-mode=%v)", nodeID, nodeConfig.DevMode)
+			}
+		}
+	}
+
 	// P2-SYNC: if seeds are provided, build HTTP base URLs and sync from peers before live operation.
 	if len(nodeConfig.SeedNodes) > 0 {
 		seedHTTPPort := nodeConfig.SeedHTTPPort
@@ -242,9 +332,10 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 				resp.Body.Close()
 			}
 
-			// Poll validator count; when >= 4, consensus auto-upgrades via ActiveConsensusMode
+			// Poll validator count; when >= 4, sync to consensus validatorSet and signal PBFT ready.
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
+			pbftReady := false
 			for range ticker.C {
 				validators, err := resources[0].Blockchain.GetValidators()
 				if err != nil {
@@ -252,10 +343,68 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 				}
 				n := len(validators)
 				log.Printf("🔍 Validator count: %d / 4", n)
-				if n >= 4 {
-					log.Printf("🎉 %s: 4 validators registered — PBFT cluster ready!", nodeConfig.Name)
+				if n >= 4 && !pbftReady {
+					pbftReady = true
+					log.Printf("🎉 %s: 4 validators registered — syncing to consensus validatorSet", nodeConfig.Name)
+					// P2-PBFT: sync all registered validators into the consensus validatorSet.
+					cons := pbftConsensus
+					if cons != nil {
+						vs := cons.GetValidatorSet()
+						if vs != nil {
+							for _, vr := range validators {
+								nodeAddr := vr.NodeAddress
+								// Use node address as validator ID (matches how nodes identify)
+								stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
+								if !ok || stake.Sign() <= 0 {
+									stake = new(big.Int).SetInt64(1000000)
+								}
+								// Convert to QTX units for the validator set
+								stakeQTX := new(big.Int).Div(stake, big.NewInt(1e9)) // rough conversion
+								if stakeQTX.Sign() <= 0 {
+									stakeQTX = big.NewInt(1000)
+								}
+								_ = vs.AddValidator(nodeAddr, stakeQTX.Uint64())
+								log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", nodeAddr, stake.String())
+							}
+							log.Printf("✅ P2-PBFT: consensus validatorSet now has %d validators — PBFT active!", n)
+						}
+					}
 					return
 				}
+			}
+		}()
+	}
+
+	// P2-PBFT: For seed node (no seeds provided) in dev-mode, also poll for 4 validators
+	// and sync them to the consensus validatorSet when quorum is reached.
+	if nodeConfig.DevMode && len(nodeConfig.SeedNodes) == 0 && pbftConsensus != nil {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			pbftReady := false
+			cons := pbftConsensus
+			for range ticker.C {
+				validators, err := resources[0].Blockchain.GetValidators()
+				if err != nil || len(validators) < 4 || pbftReady {
+					continue
+				}
+				pbftReady = true
+				log.Printf("🎉 Seed node: 4 validators — syncing consensus validatorSet")
+				if vs := cons.GetValidatorSet(); vs != nil {
+					for _, vr := range validators {
+						stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
+						if !ok || stake.Sign() <= 0 {
+							stake = new(big.Int).SetInt64(1000000)
+						}
+						stakeQTX := new(big.Int).Div(stake, big.NewInt(1e9))
+						if stakeQTX.Sign() <= 0 {
+							stakeQTX = big.NewInt(1000)
+						}
+						_ = vs.AddValidator(vr.NodeAddress, stakeQTX.Uint64())
+					}
+					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d validators", len(validators))
+				}
+				return
 			}
 		}()
 	}

@@ -598,6 +598,7 @@ func (s *Server) tryTCPSeedFallback(seedAddr string) bool {
 
 // discoverPeersDevMode connects directly to seed nodes via TCP, skipping DHT.
 // FIX-P2P-03: used with -dev-mode flag for local testnet peering.
+// P2-PBFT: retries for up to 30s to handle startup race where seed TCP isn't ready yet.
 func (s *Server) discoverPeersDevMode() error {
 	if len(s.seedNodes) == 0 {
 		log.Printf("dev-mode: no seed nodes for %s", s.localNode.Address)
@@ -609,9 +610,19 @@ func (s *Server) discoverPeersDevMode() error {
 		if seed == s.localNode.Address {
 			continue // skip self
 		}
-		conn, err := net.DialTimeout("tcp", seed, 3*time.Second)
+		// P2-PBFT: retry up to 10 times (3s each = 30s max) for seed TCP readiness.
+		var conn net.Conn
+		var err error
+		for attempt := 1; attempt <= 10; attempt++ {
+			conn, err = net.DialTimeout("tcp", seed, 3*time.Second)
+			if err == nil {
+				break
+			}
+			log.Printf("dev-mode: TCP dial %s attempt %d/10 failed: %v", seed, attempt, err)
+			time.Sleep(3 * time.Second)
+		}
 		if err != nil {
-			log.Printf("dev-mode: TCP dial %s failed: %v", seed, err)
+			log.Printf("dev-mode: TCP dial %s all attempts failed: %v", seed, err)
 			continue
 		}
 		conn.Close()
