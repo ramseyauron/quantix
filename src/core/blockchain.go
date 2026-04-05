@@ -43,6 +43,7 @@ import (
 
 	types "github.com/ramseyauron/quantix/src/core/transaction"
 	database "github.com/ramseyauron/quantix/src/core/state"
+	validatorkey "github.com/ramseyauron/quantix/src/core/validatorkey"
 	logger "github.com/ramseyauron/quantix/src/log"
 	"github.com/ramseyauron/quantix/src/pool"
 	storage "github.com/ramseyauron/quantix/src/state"
@@ -181,6 +182,15 @@ func NewBlockchain(dataDir string, nodeID string, validators []string, networkTy
 	// Update status to running after successful initialization
 	// Mark blockchain as ready for operation
 	blockchain.status = StatusRunning
+
+	// Load or generate validator reward address (Option C).
+	// This persists a SPHINCS+ keypair in dataDir/validator-key.json so that
+	// block rewards and gas fees are credited to a real wallet address.
+	if vk, err := validatorkey.LoadOrCreate(dataDir); err != nil {
+		logger.Warn("failed to load/create validator key: %v — rewards will use nodeID", err)
+	} else {
+		blockchain.rewardAddress = vk.Address
+	}
 
 	// Log final initialization success with all relevant parameters
 	logger.Info("Blockchain initialized with status: %s, sync mode: %s, network: %s, genesis hash: %s",
@@ -2422,6 +2432,12 @@ func (bc *Blockchain) GetRawTransaction(txID string, verbose bool) interface{} {
 
 // GetBestBlockHash returns the hash of the active chain's tip
 // Returns: Best block hash as bytes
+// GetRewardAddress returns the validator's reward wallet address (64-char hex).
+// Returns empty string if no validator key has been loaded.
+func (bc *Blockchain) GetRewardAddress() string {
+	return bc.rewardAddress
+}
+
 func (bc *Blockchain) GetBestBlockHash() []byte {
 	latest := bc.GetLatestBlock() // Get latest block
 	if latest == nil {
@@ -2706,7 +2722,13 @@ func (bc *Blockchain) DevnetMineBlock(nodeID string) (uint64, error) {
 	}
 
 	// Set proposer before execution so mintBlockReward credits the right address.
-	block.Header.ProposerID = nodeID
+	// Prefer the wallet rewardAddress (64-char hex) over the node ID string so
+	// miners actually receive their rewards.
+	proposer := nodeID
+	if bc.rewardAddress != "" {
+		proposer = bc.rewardAddress
+	}
+	block.Header.ProposerID = proposer
 
 	// Commit through the full execution path: ExecuteBlock + StoreBlock.
 	consensusBlock := NewBlockHelper(block)
