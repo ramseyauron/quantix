@@ -197,6 +197,14 @@ func (s *StateDB) IncrementNonce(address string) {
 	s.dirty(address).nonce++
 }
 
+// SetNonce sets the nonce for an address to a specific value.
+// Used during peer-sync to fast-forward the nonce to match the committed block state.
+func (s *StateDB) SetNonce(address string, nonce uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dirty(address).nonce = nonce
+}
+
 // RegisterPublicKey stores the raw SPHINCS+ public key for an address the first
 // time it appears on-chain.  SEC-E03: the public key is written to LevelDB
 // under "pubkey:<address>" so that future blocks can verify signatures without

@@ -129,7 +129,12 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 		// If the sender's public key is not yet on-chain, we register it on
 		// first use (validated against the Fingerprint / SHA-256(pubkey) binding).
 		// If sigVerifier is nil OR devMode is enabled, verification is skipped (devnet backwards compat).
-		if bc.sigVerifier != nil && len(tx.Signature) > 0 && !bc.devMode {
+		// If peerSyncInProgress is true, verification is skipped because the block was
+		// already committed by a PBFT quorum — PBFT attestations are the trust anchor.
+		bc.peerSyncMu.Lock()
+		isPeerSync := bc.peerSyncInProgress
+		bc.peerSyncMu.Unlock()
+		if bc.sigVerifier != nil && len(tx.Signature) > 0 && !bc.devMode && !isPeerSync {
 			pubKey := tx.SenderPublicKey
 			if len(pubKey) == 0 {
 				// Attempt to load a previously registered public key from StateDB.
@@ -152,16 +157,23 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 
 		expected := stateDB.GetNonce(tx.Sender)
 		if tx.Nonce != expected {
-			// SEC-C01: In dev-mode, gracefully drop txs with bad nonces so
-			// devnet test transactions with non-sequential nonces don't abort
-			// the whole block. In production (non-devMode), return an error to
-			// prevent silent nonce skipping which could reorder/replay txs.
-			if bc.devMode {
-				logger.Warn("executor: dev-mode: dropping tx[%d] %s: bad nonce: got %d want %d",
+			// SEC-C01: In dev-mode or peer-sync, gracefully skip nonce enforcement.
+			// In dev-mode: test transactions with non-sequential nonces don't abort the block.
+			// In peer-sync: the block was validated by PBFT quorum — trust the consensus,
+			// accept the nonce as-is and advance the nonce to tx.Nonce+1 so subsequent txs work.
+			if bc.devMode || isPeerSync {
+				if bc.devMode {
+					logger.Warn("executor: dev-mode: dropping tx[%d] %s: bad nonce: got %d want %d",
+						i, tx.ID, tx.Nonce, expected)
+					continue
+				}
+				// peer-sync: accept the tx, set nonce to match so state stays consistent
+				logger.Warn("executor: peer-sync: accepting tx[%d] %s with nonce=%d (local expected=%d)",
 					i, tx.ID, tx.Nonce, expected)
-				continue
+				stateDB.SetNonce(tx.Sender, tx.Nonce)
+			} else {
+				return fmt.Errorf("tx[%d] %s: bad nonce: got %d want %d", i, tx.ID, tx.Nonce, expected)
 			}
-			return fmt.Errorf("tx[%d] %s: bad nonce: got %d want %d", i, tx.ID, tx.Nonce, expected)
 		}
 
 		gasFee := tx.GetGasFee()
