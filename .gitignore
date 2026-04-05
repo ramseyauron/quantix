@@ -1,0 +1,40 @@
+# SEC-KEY01: Never commit private key material
+# P2P node private keys — generated at runtime, must not be in source control
+src/p2p/data/*/keys/private.key
+src/p2p/data/*/keys/public.key
+src/p2p/data/*/keys/node_info.json
+
+# LevelDB / RocksDB data directories
+src/p2p/data/*/chaindata/
+src/p2p/data/*/state.db/
+src/p2p/data/*/blockchain.db/
+*.ldb
+*.log
+
+# Test binary artifacts
+*.test
+common.test
+http.test
+transaction.test
+
+# Build output
+/quantix
+/quantixd
+/bin/
+
+# SPHINCS+ key stores — never commit wallet key material
+*.keystore
+*.vault
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Go
+vendor/
