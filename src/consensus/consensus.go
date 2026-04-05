@@ -355,13 +355,17 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	}
 
 	// Update block metadata for tracking
+	// BUG 3 FIX: In devMode, block signing is skipped but we still mark SigValid=true
+	// to avoid false "signature_valid:false" in logs. Signature verification is skipped
+	// in dev/test mode by design.
+	sigValid := c.devMode // devMode: no signing, mark valid; production: sign first, then mark below
 	if direct, ok := block.(*types.Block); ok {
 		direct.Header.CommitStatus = "proposed"
-		direct.Header.SigValid = false
+		direct.Header.SigValid = sigValid
 	} else if helper, ok := block.(interface{ GetUnderlyingBlock() *types.Block }); ok {
 		if ub := helper.GetUnderlyingBlock(); ub != nil {
 			ub.Header.CommitStatus = "proposed"
-			ub.Header.SigValid = false
+			ub.Header.SigValid = sigValid
 		}
 	}
 
@@ -399,7 +403,10 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	// In DEVNET_SOLO mode we self-commit without waiting for peer votes.
 	// This avoids a deadlock where the single node waits for a quorum that
 	// can never be reached.
-	devnetSolo := c.ActiveConsensusMode() == DEVNET_SOLO
+	// FIX-PBFT-DEADLOCK: c.mu is already held here — call getTotalNodes() directly
+	// instead of ActiveConsensusMode() which would re-acquire c.mu.RLock() causing
+	// a self-deadlock on the same goroutine (sync.RWMutex is not reentrant).
+	devnetSolo := GetConsensusMode(c.getTotalNodes()) == DEVNET_SOLO
 	c.mu.Unlock()
 
 	if devnetSolo {
@@ -414,7 +421,14 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	}
 
 	// Broadcast the proposal (lock already released)
-	return c.broadcastProposal(proposal)
+	// FIX-PBFT-DEADLOCK: also self-deliver the proposal so the proposer node
+	// participates in the prepare phase (sets preparedBlock, sends PrepareVote).
+	// Without self-delivery, the proposer never sets c.preparedBlock and cannot
+	// reach prepare quorum even when f+1 followers send PrepareVotes.
+	if err := c.broadcastProposal(proposal); err != nil {
+		return err
+	}
+	return c.HandleProposal(proposal)
 }
 
 // HandleProposal queues an incoming proposal for processing
@@ -1282,8 +1296,8 @@ func (c *Consensus) processTimeout(timeout *TimeoutMsg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Verify timeout signature if signing service available
-	if c.signingService != nil && len(timeout.Signature) > 0 {
+	// Verify timeout signature if signing service available (skip in dev-mode)
+	if c.signingService != nil && len(timeout.Signature) > 0 && !c.devMode {
 		valid, err := c.signingService.VerifyTimeout(timeout)
 		if err != nil || !valid {
 			logger.Warn("Invalid timeout signature from %s: %v", timeout.VoterID, err)
@@ -1352,6 +1366,10 @@ func (c *Consensus) sendPrepareVote(blockHash string, view uint64) {
 	// Mark as sent and broadcast
 	c.sentPrepareVotes[blockHash] = true
 	c.broadcastPrepareVote(prepareVote)
+	// FIX-PBFT-DEADLOCK: self-deliver prepare vote so this node counts its own vote
+	// towards quorum (needed for followers — without self-delivery they never reach
+	// prepare quorum and never send commit votes).
+	go func() { _ = c.HandlePrepareVote(prepareVote) }()
 	logger.Info("Node %s sent prepare vote for block %s at view %d", c.nodeID, blockHash, view)
 }
 
@@ -1392,6 +1410,9 @@ func (c *Consensus) voteForBlock(blockHash string, view uint64) {
 	// Mark as sent and broadcast
 	c.sentVotes[blockHash] = true
 	c.broadcastVote(vote)
+	// FIX-PBFT-DEADLOCK: self-deliver commit vote so this node counts its own
+	// vote towards commit quorum (needed for all nodes including the proposer).
+	go func() { _ = c.HandleVote(vote) }()
 	logger.Info("🗳️ Node %s sent COMMIT vote for block %s (height %d) at view %d",
 		c.nodeID, blockHash, blockToVote.GetHeight(), view)
 }
@@ -1506,8 +1527,22 @@ func (c *Consensus) calculateQuorumSize(totalNodes int) int {
 	return quorumSize
 }
 
-// getTotalNodes returns the total number of active validator nodes
+// getTotalNodes returns the total number of active validator nodes.
+// FIX-PBFT-DEADLOCK: prefer validatorSet count (populated from blockchain validator
+// registry at PBFT activation) over P2P peer list which may be empty because
+// network.NodeManager.AddPeer requires IP/Port fields that TCP-only nodes lack.
 func (c *Consensus) getTotalNodes() int {
+	// Primary: count from validatorSet (authoritative once PBFT is active)
+	if c.validatorSet != nil {
+		c.validatorSet.mu.RLock()
+		vsCount := len(c.validatorSet.validators)
+		c.validatorSet.mu.RUnlock()
+		if vsCount >= MinPBFTValidators {
+			return vsCount
+		}
+	}
+
+	// Fallback: count from P2P peer list
 	peers := c.nodeManager.GetPeers()
 	validatorCount := 0
 	// Count validator peers

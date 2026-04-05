@@ -21,6 +21,8 @@ import (
 	security "github.com/ramseyauron/quantix/src/handshake"
 	"github.com/ramseyauron/quantix/src/network"
 	"github.com/ramseyauron/quantix/src/transport"
+	"github.com/ramseyauron/quantix/src/core"
+	types "github.com/ramseyauron/quantix/src/core/transaction"
 )
 
 // P2PNodeManager implements consensus.NodeManager via P2P TCP broadcast.
@@ -63,7 +65,43 @@ func (m *P2PNodeManager) GetNode(nodeID string) consensus.Node {
 // BroadcastMessage encodes a consensus message and broadcasts it via TCP to all peers.
 func (m *P2PNodeManager) BroadcastMessage(messageType string, data interface{}) error {
 	// JSON-encode the payload
-	payload, err := json.Marshal(data)
+	// FIX-PBFT-DEADLOCK: for proposals, the Proposal.Block is a consensus.Block interface
+	// (implemented by *core.BlockHelper which wraps *types.Block). json.Marshal would
+	// serialize the wrapper struct as {} because it has no JSON tags. Extract the underlying
+	// *types.Block and use a wire type for correct serialization.
+	var payload []byte
+	var err error
+	if messageType == "proposal" {
+		if proposal, ok := data.(*consensus.Proposal); ok {
+			type wireProposal struct {
+				Block           *types.Block `json:"block"`
+				View            uint64       `json:"view"`
+				ProposerID      string       `json:"proposer_id"`
+				Signature       []byte       `json:"signature"`
+				ElectedLeaderID string       `json:"elected_leader_id"`
+				SlotNumber      uint64       `json:"slot_number"`
+			}
+			wire := wireProposal{
+				View:            proposal.View,
+				ProposerID:      proposal.ProposerID,
+				Signature:       proposal.Signature,
+				ElectedLeaderID: proposal.ElectedLeaderID,
+				SlotNumber:      proposal.SlotNumber,
+			}
+			// Extract underlying *types.Block from the interface
+			if proposal.Block != nil {
+				if tb, ok2 := proposal.Block.(*types.Block); ok2 {
+					wire.Block = tb
+				} else if helper, ok2 := proposal.Block.(interface{ GetUnderlyingBlock() *types.Block }); ok2 {
+					wire.Block = helper.GetUnderlyingBlock()
+				}
+			}
+			payload, err = json.Marshal(wire)
+		}
+	}
+	if payload == nil && err == nil {
+		payload, err = json.Marshal(data)
+	}
 	if err != nil {
 		return fmt.Errorf("P2PNodeManager: failed to encode %s: %w", messageType, err)
 	}
@@ -126,12 +164,34 @@ func RouteConsensusMessage(raw []byte, cons *consensus.Consensus) error {
 
 	switch env.Type {
 	case "proposal":
-		var proposal consensus.Proposal
-		if err := json.Unmarshal(env.Payload, &proposal); err != nil {
-			return fmt.Errorf("RouteConsensusMessage: decode proposal: %w", err)
+		// FIX-PBFT-DEADLOCK: Proposal.Block is a consensus.Block interface — JSON cannot
+		// unmarshal into an interface directly. Use a wire struct with json.RawMessage for
+		// the block, then decode into *types.Block separately.
+		var wireProposal struct {
+			Block           json.RawMessage `json:"block"`
+			View            uint64          `json:"view"`
+			ProposerID      string          `json:"proposer_id"`
+			Signature       []byte          `json:"signature"`
+			ElectedLeaderID string          `json:"elected_leader_id"`
+			SlotNumber      uint64          `json:"slot_number"`
+		}
+		if err := json.Unmarshal(env.Payload, &wireProposal); err != nil {
+			return fmt.Errorf("RouteConsensusMessage: decode proposal wire: %w", err)
+		}
+		var block types.Block
+		if err := json.Unmarshal(wireProposal.Block, &block); err != nil {
+			return fmt.Errorf("RouteConsensusMessage: decode proposal block: %w", err)
+		}
+		proposal := &consensus.Proposal{
+			Block:           core.NewBlockHelper(&block),
+			View:            wireProposal.View,
+			ProposerID:      wireProposal.ProposerID,
+			Signature:       wireProposal.Signature,
+			ElectedLeaderID: wireProposal.ElectedLeaderID,
+			SlotNumber:      wireProposal.SlotNumber,
 		}
 		log.Printf("🔵 [P2P] Received proposal from %s", proposal.ProposerID)
-		return cons.HandleProposal(&proposal)
+		return cons.HandleProposal(proposal)
 
 	case "vote":
 		var vote consensus.Vote

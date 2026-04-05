@@ -744,7 +744,9 @@ func (b *Block) UnmarshalJSON(data []byte) error {
 
 	// Set parsed values
 	b.Header = aux.Header
-	b.Body = *aux.Body
+	if aux.Body != nil {
+		b.Body = *aux.Body
+	}
 	return nil
 }
 

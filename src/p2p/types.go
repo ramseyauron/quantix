@@ -65,6 +65,10 @@ type Server struct {
 	// pruned lazily on each insertion.
 	seenBlocks    map[string]time.Time
 	seenBlocksMu  sync.Mutex
+
+	// FIX-PBFT-DEADLOCK: dedup map for consensus message relay.
+	// Prevents broadcast storms when relaying consensus_msg in star topology.
+	seenConsensusMsgs map[string]struct{}
 }
 
 func (s *Server) LocalNode() *network.Node {
