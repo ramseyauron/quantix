@@ -290,9 +290,11 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	}
 
 	// Fix 2: dev-mode peer validator auto-registration.
+	// minerStopCh signals the devnet miner to stop when PBFT quorum is reached.
+	minerStopCh := make(chan struct{})
 	// If seeds are provided, register this node with each seed and poll until
 	// 4 validators are present, then the consensus engine will switch to PBFT.
-	if nodeConfig.DevMode && len(nodeConfig.SeedNodes) > 0 {
+	if len(nodeConfig.SeedNodes) > 0 {
 		localNode := resources[0].P2PServer.LocalNode()
 		myPubKey := hex.EncodeToString(localNode.PublicKey)
 		myAddr := nodeConfig.TCPAddr
@@ -322,37 +324,75 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 				RegisteredAt: time.Now(),
 			}
 			regData, _ := json.Marshal(reg)
-			for _, seedURL := range seedHTTPs {
-				url := seedURL + "/validator/register"
-				resp, err := nethttp.Post(url, "application/json", bytes.NewReader(regData)) //nolint:noctx
+			registerSecret := os.Getenv("VALIDATOR_REGISTER_SECRET")
+			doPost := func(url string) int {
+				req, err := nethttp.NewRequest("POST", url, bytes.NewReader(regData))
 				if err != nil {
-					log.Printf("⚠️  validator register to %s failed: %v", url, err)
-					continue
+					return 0
+				}
+				req.Header.Set("Content-Type", "application/json")
+				if registerSecret != "" {
+					req.Header.Set("X-Register-Secret", registerSecret)
+				}
+				resp, err := nethttp.DefaultClient.Do(req) //nolint:noctx
+				if err != nil {
+					return 0
 				}
 				io.Copy(io.Discard, resp.Body) //nolint:errcheck
 				resp.Body.Close()
-				log.Printf("✅ Registered validator with seed %s (status %d)", seedURL, resp.StatusCode)
+				return resp.StatusCode
+			}
+			for _, seedURL := range seedHTTPs {
+				url := seedURL + "/validator/register"
+				status := doPost(url)
+				if status == 0 {
+					log.Printf("⚠️  validator register to %s failed", url)
+					continue
+				}
+				log.Printf("✅ Registered validator with seed %s (status %d)", seedURL, status)
 			}
 
 			// Also register self on local HTTP
 			localHTTPPort := nodeConfig.HTTPPort
 			selfURL := "http://" + localHTTPPort + "/validator/register"
-			resp, err := nethttp.Post(selfURL, "application/json", bytes.NewReader(regData)) //nolint:noctx
-			if err == nil {
-				io.Copy(io.Discard, resp.Body) //nolint:errcheck
-				resp.Body.Close()
-			}
+			doPost(selfURL)
 
 			// Poll validator count; when >= 4, sync to consensus validatorSet and signal PBFT ready.
+			// Check the seed's validator list (authoritative) rather than local DB.
+			type validatorResp struct {
+				Count      int `json:"count"`
+				Validators []struct {
+					PublicKey   string `json:"public_key"`
+					StakeAmount string `json:"stake_amount"`
+					NodeAddress string `json:"node_address"`
+					Active      bool   `json:"active"`
+				} `json:"validators"`
+			}
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			pbftReady := false
 			for range ticker.C {
-				validators, err := resources[0].Blockchain.GetValidators()
-				if err != nil {
-					continue
+				// Prefer seed HTTP for validator count so all nodes see the global count.
+				var n int
+				var validators []struct {
+					PublicKey   string `json:"public_key"`
+					StakeAmount string `json:"stake_amount"`
+					NodeAddress string `json:"node_address"`
+					Active      bool   `json:"active"`
 				}
-				n := len(validators)
+				for _, seedURL := range seedHTTPs {
+					resp, err2 := nethttp.Get(seedURL + "/validators") //nolint:noctx
+					if err2 != nil {
+						continue
+					}
+					var vresp validatorResp
+					if err2 = json.NewDecoder(resp.Body).Decode(&vresp); err2 == nil {
+						n = vresp.Count
+						validators = vresp.Validators
+					}
+					resp.Body.Close()
+					break
+				}
 				log.Printf("🔍 Validator count: %d / 4", n)
 				if n >= 4 && !pbftReady {
 					pbftReady = true
@@ -386,6 +426,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					} else {
 						log.Printf("🚀 P2-PBFT: consensus engine started — PBFT quorum reached (%d validators)", n)
 					}
+					close(minerStopCh)
+					log.Printf("🔨→⚖️ Devnet miner stopped, PBFT consensus engine running")
 					return
 				}
 			}
@@ -394,8 +436,23 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 
 	// P2-PBFT: For seed node (no seeds provided) in dev-mode, also poll for 4 validators
 	// and sync them to the consensus validatorSet when quorum is reached.
-	if nodeConfig.DevMode && len(nodeConfig.SeedNodes) == 0 && pbftConsensus != nil {
+	if len(nodeConfig.SeedNodes) == 0 && pbftConsensus != nil {
 		go func() {
+			// Seed node: register self in the blockchain DB so peers' poll can see it.
+			time.Sleep(6 * time.Second)
+			selfReg := &core.ValidatorRegistration{
+				PublicKey:    hex.EncodeToString(resources[0].P2PServer.LocalNode().PublicKey),
+				StakeAmount:  "1000000",
+				NodeAddress:  nodeConfig.TCPAddr,
+				Active:       true,
+				RegisteredAt: time.Now(),
+			}
+			if err := resources[0].Blockchain.RegisterValidator(selfReg); err != nil {
+				log.Printf("⚠️  P2-PBFT: seed self-register: %v", err)
+			} else {
+				log.Printf("✅ P2-PBFT: seed node self-registered in validator DB")
+			}
+
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			pbftReady := false
@@ -427,6 +484,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 				} else {
 					log.Printf("🚀 P2-PBFT: seed node consensus engine started — PBFT quorum reached")
 				}
+				close(minerStopCh)
+				log.Printf("🔨→⚖️ Devnet miner stopped, PBFT consensus engine running (seed node)")
 				return
 			}
 		}()
@@ -462,6 +521,9 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		log.Printf("🔨 Devnet miner started for %s — producing blocks every 10s", nodeConfig.Name)
 		for {
 			select {
+			case <-minerStopCh:
+				log.Printf("⛏️  Devnet miner stopped for %s — PBFT took over", nodeConfig.Name)
+				return
 			case <-ticker.C:
 				func() {
 					defer func() {
