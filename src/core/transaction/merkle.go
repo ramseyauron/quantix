@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"crypto/sha256"
 	"github.com/ramseyauron/quantix/src/common"
 )
 
@@ -36,16 +37,17 @@ import (
 func NewMerkleNode(left, right *MerkleNode, data []byte) *MerkleNode {
 	node := &MerkleNode{}
 
+	sha256Hash := func(data []byte) []byte { h := sha256.Sum256(data); return h[:] }
 	if left == nil && right == nil {
-		// Leaf node: hash the transaction data
-		node.Hash = common.SpxHash(data)
+		// Leaf node: hash the transaction data with SHA256 (fast for testnet)
+		node.Hash = sha256Hash(data)
 		node.IsLeaf = true
 	} else {
 		// Internal node: hash the concatenation of left and right hashes
 		if right != nil {
 			// Normal case: both left and right exist
 			prevHashes := append(left.Hash, right.Hash...)
-			node.Hash = common.SpxHash(prevHashes)
+			node.Hash = sha256Hash(prevHashes)
 		} else {
 			// Odd node case: only left exists, carry it over
 			node.Hash = left.Hash
@@ -154,7 +156,8 @@ func (mt *MerkleTree) verifyNode(node, root *MerkleNode) bool {
 // VerifyTransaction verifies if a transaction is included in the Merkle tree
 func (mt *MerkleTree) VerifyTransaction(tx *Transaction) bool {
 	txData := tx.SerializeForMerkle()
-	txHash := common.SpxHash(txData)
+	h := sha256.Sum256(txData)
+	txHash := h[:]
 
 	// Find the leaf node with matching hash
 	var targetLeaf *MerkleNode
@@ -203,7 +206,8 @@ func (tx *Transaction) SerializeForMerkle() []byte {
 // GenerateMerkleProof generates a Merkle proof for a specific transaction
 func (mt *MerkleTree) GenerateMerkleProof(tx *Transaction) ([][]byte, error) {
 	txData := tx.SerializeForMerkle()
-	txHash := common.SpxHash(txData)
+	h := sha256.Sum256(txData)
+	txHash := h[:]
 
 	// Find the leaf index
 	var leafIndex int = -1

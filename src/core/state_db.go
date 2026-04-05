@@ -197,6 +197,39 @@ func (s *StateDB) IncrementNonce(address string) {
 	s.dirty(address).nonce++
 }
 
+// RegisterPublicKey stores the raw SPHINCS+ public key for an address the first
+// time it appears on-chain.  SEC-E03: the public key is written to LevelDB
+// under "pubkey:<address>" so that future blocks can verify signatures without
+// the sender re-submitting the key.  Subsequent calls are no-ops if a key is
+// already registered; the existing binding is never replaced (key immutability).
+func (s *StateDB) RegisterPublicKey(address string, pubKeyBytes []byte) {
+	if len(pubKeyBytes) == 0 || address == "" {
+		return
+	}
+	// Skip if already stored.
+	key := "pubkey:" + address
+	if _, err := s.db.Get(key); err == nil {
+		return
+	}
+	if err := s.db.Put(key, pubKeyBytes); err != nil {
+		logger.Warn("StateDB.RegisterPublicKey: failed to persist pubkey for %s: %v", address, err)
+	}
+}
+
+// GetPublicKey retrieves the raw SPHINCS+ public key for address, or nil if
+// none has been registered yet.  Used by the executor for SEC-E03 sig verification.
+func (s *StateDB) GetPublicKey(address string) []byte {
+	if address == "" {
+		return nil
+	}
+	key := "pubkey:" + address
+	data, err := s.db.Get(key)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
 // IncrementTotalSupply adds amount to the tracked circulating supply.
 func (s *StateDB) IncrementTotalSupply(amount *big.Int) {
 	s.mu.Lock()

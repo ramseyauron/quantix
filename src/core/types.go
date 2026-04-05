@@ -165,6 +165,11 @@ type Blockchain struct {
 	// devMode: when true, balance checks are skipped in applyTransactions.
 	// Allows testnet transactions from unfunded addresses without genesis funding.
 	devMode bool
+
+	// SEC-E03: optional SPHINCS+ signature verifier, injected after construction.
+	// When nil, signature verification is skipped (backwards-compatible for nodes
+	// that have not yet wired up a SphincsManager).
+	sigVerifier TxSigVerifier
 }
 
 // GossipBroadcaster is implemented by the P2P server and called by the
@@ -173,6 +178,16 @@ type Blockchain struct {
 type GossipBroadcaster interface {
 	BroadcastBlock(block *types.Block)
 	BroadcastTransaction(tx *types.Transaction)
+}
+
+// TxSigVerifier is implemented by sphincs.SphincsManager and injected into
+// Blockchain for SEC-E03 execution-layer signature verification.
+// The interface is minimal to avoid pulling the sphincs package into core/types.go.
+type TxSigVerifier interface {
+	// VerifyTxSignature checks the SPHINCS+ signature on a transaction.
+	// message  = SHA-256(canonical preimage: "sender:receiver:amount:nonce")
+	// Returns true iff the signature is cryptographically valid.
+	VerifyTxSignature(message, sigTimestamp, sigNonce, sigBytes, senderPubKey []byte) bool
 }
 
 // GenesisState holds the complete genesis configuration used to bootstrap a node.

@@ -674,3 +674,36 @@ func buildHashTreeFromSignature(sigParts [][]byte) (*hashtree.HashTreeNode, erro
 	}
 	return tree.Root, nil
 }
+
+// VerifyTxSignature implements core.TxSigVerifier for use by the executor
+// (SEC-E03). It performs a fast SPHINCS+ Spx_verify check on the canonical
+// transaction message without the full Pedersen/Merkle commitment overhead.
+//
+// Parameters:
+//   - message:      SHA-256(canonical preimage: "sender:receiver:amount:nonce")
+//   - sigTimestamp: 8-byte big-endian signing timestamp from SignMessage
+//   - sigNonce:     16-byte signing nonce from SignMessage
+//   - sigBytes:     serialised SPHINCS_SIG bytes
+//   - senderPubKey: raw serialised SPHINCS_PK bytes
+//
+// Returns true iff Spx_verify passes.
+func (sm *SphincsManager) VerifyTxSignature(message, sigTimestamp, sigNonce, sigBytes, senderPubKey []byte) bool {
+	if sm.parameters == nil || sm.parameters.Params == nil {
+		return false
+	}
+	if len(sigBytes) == 0 || len(senderPubKey) == 0 {
+		return false
+	}
+	sig, err := sphincs.DeserializeSignature(sm.parameters.Params, sigBytes)
+	if err != nil {
+		return false
+	}
+	pk, err := sphincs.DeserializePK(sm.parameters.Params, senderPubKey)
+	if err != nil {
+		return false
+	}
+	// Reconstruct the signed payload exactly as in SignMessage:
+	// timestamp || nonce || message
+	payload := buildMessageWithTimestampAndNonce(sigTimestamp, sigNonce, message)
+	return sphincs.Spx_verify(sm.parameters.Params, payload, sig, pk)
+}
