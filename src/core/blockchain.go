@@ -869,9 +869,17 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 					continue
 				}
 
+				// BUG 1 FIX: Set ProposerID before serializing into ProposalMsg
+				// so mintBlockReward credits the correct validator.
+				proposerID := bc.consensusEngine.GetNodeID()
+				if bc.rewardAddress != "" {
+					proposerID = bc.rewardAddress
+				}
+				block.Header.ProposerID = proposerID
+
 				// Log successful block creation
-				logger.Info("Leader %s proposing block at height %d with %d transactions and nonce %s",
-					bc.consensusEngine.GetNodeID(), block.GetHeight(), len(block.Body.TxsList), block.Header.Nonce)
+				logger.Info("Leader %s proposing block at height %d with %d transactions and nonce %s, proposer_id=%s",
+					bc.consensusEngine.GetNodeID(), block.GetHeight(), len(block.Body.TxsList), block.Header.Nonce, block.Header.ProposerID)
 
 				// Convert to consensus.Block using adapter
 				consensusBlock := NewBlockHelper(block)
@@ -1363,7 +1371,23 @@ func (bc *Blockchain) CreateBlock() (*types.Block, error) {
 
 	// Prepare block components
 	extraData := []byte("Quantix Network Block") // Block metadata
-	miner := make([]byte, 20)                   // Miner address (placeholder)
+	// BUG 2 FIX: Set miner (coinbase) from rewardAddress so block explorers see correct miner
+	miner := make([]byte, 20) // Default zero address
+	if bc.rewardAddress != "" {
+		if minerBytes, err := hex.DecodeString(bc.rewardAddress); err == nil && len(minerBytes) == 20 {
+			miner = minerBytes
+		} else if len(bc.rewardAddress) > 20 {
+			// rewardAddress may be a 40-char hex address (without 0x) of a full pub-key hash
+			// Use last 20 bytes as miner address
+			addrHex := bc.rewardAddress
+			if len(addrHex) >= 40 {
+				addrHex = addrHex[len(addrHex)-40:]
+			}
+			if mb, e2 := hex.DecodeString(addrHex); e2 == nil && len(mb) == 20 {
+				miner = mb
+			}
+		}
+	}
 	emptyUncles := []*types.BlockHeader{}       // No uncle blocks
 
 	// Create block with initial nonce
