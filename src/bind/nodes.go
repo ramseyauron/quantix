@@ -161,6 +161,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 
 	resources[0].P2PServer.SetSphincsMgr(sphincsMgr)
 	resources[0].HTTPServer.SetSphincsMgr(sphincsMgr)
+	// SEC-E03-wire: also activate executor-layer sig verification for P2P gossip blocks.
+	resources[0].Blockchain.SetSigVerifier(sphincsMgr)
 
 	// Re-inject DB into the resources blockchain (same object, belt-and-suspenders)
 	resources[0].Blockchain.SetStorageDB(database.WrapLevelDB(db))
@@ -959,7 +961,10 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 				httpSphincs := sign.NewSphincsManager(dbs[i], httpKM, httpSP)
 				if httpSphincs != nil {
 					httpServers[i].SetSphincsMgr(httpSphincs)
-					logger.Infof("✅ SEC-S03: SphincsManager wired into HTTP server for %s", config.Name)
+					// SEC-E03-wire: also inject into the blockchain executor so blocks
+					// received via P2P gossip (bypassing HTTP) also get sig-verified.
+					blockchains[i].SetSigVerifier(httpSphincs)
+					logger.Infof("✅ SEC-S03/E03: SphincsManager wired into HTTP server + blockchain executor for %s", config.Name)
 				}
 			}
 		}
