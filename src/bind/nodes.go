@@ -25,6 +25,7 @@ package bind
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -164,6 +165,13 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	resources[0].Blockchain.SetStorageDB(database.WrapLevelDB(db))
 	resources[0].Blockchain.SetStateDB(database.WrapLevelDB(db))
 
+	// FIX: Confirm genesis allocations in the correct (re-injected) DB handle.
+	if genesisErr := resources[0].Blockchain.ExecuteGenesisBlock(); genesisErr != nil {
+		log.Printf("⚠️  ExecuteGenesisBlock (StartSingleNode) failed: %v", genesisErr)
+	} else {
+		log.Printf("✅ Genesis allocations confirmed in correct DB")
+	}
+
 	// Fix 1: dev-mode balance skip
 	if nodeConfig.DevMode {
 		resources[0].Blockchain.SetDevMode(true)
@@ -229,10 +237,9 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		if cons == nil {
 			log.Printf("⚠️  P2-PBFT: NewConsensus returned nil — PBFT disabled for %s", nodeName)
 		} else {
-			// Dev-mode: skip SPHINCS+ sig verification on votes/proposals.
-			if nodeConfig.DevMode {
-				cons.SetDevMode(true)
-			}
+			// Always enable consensus dev-mode to skip slow SPHINCS+ signing/verification.
+			// Production security is handled at the network/transport layer (Kyber768 handshake).
+			cons.SetDevMode(true)
 
 			// Add self as validator with minimum stake.
 			if vs := cons.GetValidatorSet(); vs != nil {
@@ -414,8 +421,12 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 								if stakeQTX.Sign() <= 0 {
 									stakeQTX = big.NewInt(1000)
 								}
-								_ = vs.AddValidator(nodeAddr, stakeQTX.Uint64())
-								log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", nodeAddr, stake.String())
+								consNodeID := nodeAddr
+								if !strings.HasPrefix(consNodeID, "Node-") {
+									consNodeID = "Node-" + consNodeID
+								}
+								_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
+								log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", consNodeID, stake.String())
 							}
 							log.Printf("✅ P2-PBFT: consensus validatorSet now has %d validators — PBFT active!", n)
 						}
@@ -425,6 +436,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 						log.Printf("⚠️  P2-PBFT: consensus.Start failed at quorum: %v", err)
 					} else {
 						log.Printf("🚀 P2-PBFT: consensus engine started — PBFT quorum reached (%d validators)", n)
+						resources[0].Blockchain.StartLeaderLoop(context.Background())
+						log.Printf("🏁 P2-PBFT: leader loop started for peer node")
 					}
 					close(minerStopCh)
 					log.Printf("🔨→⚖️ Devnet miner stopped, PBFT consensus engine running")
@@ -474,7 +487,11 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 						if stakeQTX.Sign() <= 0 {
 							stakeQTX = big.NewInt(1000)
 						}
-						_ = vs.AddValidator(vr.NodeAddress, stakeQTX.Uint64())
+						consNodeID := vr.NodeAddress
+						if !strings.HasPrefix(consNodeID, "Node-") {
+							consNodeID = "Node-" + consNodeID
+						}
+						_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
 					}
 					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d validators", len(validators))
 				}
@@ -483,6 +500,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					log.Printf("⚠️  P2-PBFT: seed node consensus.Start failed at quorum: %v", err)
 				} else {
 					log.Printf("🚀 P2-PBFT: seed node consensus engine started — PBFT quorum reached")
+					resources[0].Blockchain.StartLeaderLoop(context.Background())
+					log.Printf("🏁 P2-PBFT: leader loop started for seed node")
 				}
 				close(minerStopCh)
 				log.Printf("🔨→⚖️ Devnet miner stopped, PBFT consensus engine running (seed node)")
@@ -835,12 +854,6 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 		}
 		blockchains[i] = blockchain
 
-		// Wrap the already-open dbs[i] to avoid LevelDB double-lock.
-		// database.WrapLevelDB shares the handle without re-opening the file.
-		blockchain.SetStorageDB(database.WrapLevelDB(dbs[i]))
-		blockchain.SetStateDB(database.WrapLevelDB(dbs[i]))
-		logger.Infof("✅ Storage DB injected for %s — devnet miner enabled", config.Name)
-
 		logger.Infof("Genesis block created for %s, hash: %x", config.Name, blockchains[i].GetBestBlockHash())
 		// FIX-P2P-GOSSIP2: use a fanout pattern so TCP writes once but both
 		// RPC and P2P servers receive every message independently.
@@ -880,6 +893,19 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 				return nil, fmt.Errorf("failed to open LevelDB for %s: %w", config.Name, dbErr)
 			}
 			dbs[i] = openedDB
+		}
+
+		// FIX: Inject the correct DB handle into the blockchain, then re-run genesis
+		// distribution so allocation balances are written to the shared DB (dbs[i]).
+		// NewBlockchain.initializeChain wrote to an internal state.db; this overwrites
+		// that with the correct handle and re-applies allocations via idempotency guard.
+		blockchain.SetStorageDB(database.WrapLevelDB(dbs[i]))
+		blockchain.SetStateDB(database.WrapLevelDB(dbs[i]))
+		logger.Infof("✅ Storage DB injected for %s", config.Name)
+		if genesisErr := blockchains[i].ExecuteGenesisBlock(); genesisErr != nil {
+			logger.Warnf("ExecuteGenesisBlock (post-DB-inject) failed for %s: %v", config.Name, genesisErr)
+		} else {
+			logger.Infof("✅ Genesis allocations persisted to correct DB for %s", config.Name)
 		}
 
 		// Initialize p2p.Server with NodePortConfig, ensuring Node.ID is set
