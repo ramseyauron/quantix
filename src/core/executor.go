@@ -109,6 +109,16 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 			return fmt.Errorf("tx[%d] %s: sanity check failed: %w", i, tx.ID, err)
 		}
 
+		// SEC-G01: Block any transaction targeting the GenesisVaultAddress.
+		// The genesis vault (0000...0001) is a protocol-internal address whose
+		// balance is only drained during ExecuteGenesisBlock.  Any user transaction
+		// sending funds there would permanently lock them — no withdrawal path exists.
+		// This also prevents an attacker from inflating the vault balance to disrupt
+		// supply accounting or confuse IsDistributionComplete logic.
+		if tx.Receiver == GenesisVaultAddress {
+			return fmt.Errorf("tx[%d] %s: SEC-G01: transactions to genesis vault address are forbidden", i, tx.ID)
+		}
+
 		// SEC-E03: Execution-layer signature verification.
 		// Blocks received via direct peer broadcast or archive sync bypass the
 		// mempool, so we must re-verify here.  Verification requires:
