@@ -111,7 +111,7 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 			break
 		}
 
-		from := localCount + 1 // start from next needed block
+		from := localCount // localCount = latestHeight+1 = next needed height
 		url := fmt.Sprintf("%s/blocks?from=%d&limit=%d", peerBase, from, pageSize)
 		resp, err := client.Get(url)
 		if err != nil {
@@ -138,7 +138,9 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 			// Recompute the hash and compare to the claimed hash to prevent
 			// hash-spoofing attacks from malicious peers.
 			computedHashBytes := blk.GenerateBlockHash()
-			computedHash := fmt.Sprintf("%x", computedHashBytes)
+			// GenerateBlockHash returns []byte that is the UTF-8 hex string (F-26),
+			// so cast directly to string rather than using %x (which would double-encode).
+			computedHash := string(computedHashBytes)
 			claimedHash := blk.GetHash()
 			if computedHash != claimedHash {
 				logger.Warn("⚠️ Block %d hash mismatch: claimed=%s computed=%s — skipping",
@@ -150,8 +152,14 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 			log.Printf("[SYNC] Catching up: block %d/%d from seed", blk.Header.Height, seedCount)
 
 			if err := bc.AddBlockFromPeer(blk); err != nil {
-				// Fall back to ImportBlock for resilience
+				// Fall back to ImportBlock for resilience (also with peerSync flag set).
+				bc.peerSyncMu.Lock()
+				bc.peerSyncInProgress = true
+				bc.peerSyncMu.Unlock()
 				result := bc.ImportBlock(blk)
+				bc.peerSyncMu.Lock()
+				bc.peerSyncInProgress = false
+				bc.peerSyncMu.Unlock()
 				if result != ImportedBest && result != ImportedExisting && result != ImportedSide {
 					logger.Warn("Failed to import block %d from peer: result=%v", blk.Header.Height, result)
 				}

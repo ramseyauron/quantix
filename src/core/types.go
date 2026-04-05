@@ -171,6 +171,14 @@ type Blockchain struct {
 	// that have not yet wired up a SphincsManager).
 	sigVerifier TxSigVerifier
 
+	// peerSyncInProgress is set to true while AddBlockFromPeer is executing so
+	// that applyTransactions can skip SEC-E03 signature verification for blocks
+	// that were already committed by a PBFT quorum.  The PBFT attestations in
+	// the block body are the trust anchor for peer-sourced blocks.
+	// Uses sync/atomic via a separate peerSyncMu to avoid deadlock with bc.lock.
+	peerSyncInProgress bool
+	peerSyncMu         sync.Mutex
+
 	// rewardAddress is the wallet address (64-char hex) that receives block
 	// rewards and gas fees for blocks mined by this node.  Set during
 	// NewBlockchain from the persisted validator-key.json.

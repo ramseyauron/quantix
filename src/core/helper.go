@@ -202,6 +202,18 @@ func (bc *Blockchain) AddBlockFromPeer(block *types.Block) error {
 	if latest != nil && block.GetHeight() <= latest.GetHeight() {
 		return nil // already have it
 	}
+	// Mark peer-sync in progress so applyTransactions skips SEC-E03.
+	// Blocks from peers were already validated by a PBFT quorum; PBFT
+	// attestations are the trust anchor, not individual tx signatures.
+	// Use peerSyncMu (not bc.lock) to avoid deadlock — CommitBlock also acquires bc.lock.
+	bc.peerSyncMu.Lock()
+	bc.peerSyncInProgress = true
+	bc.peerSyncMu.Unlock()
+	defer func() {
+		bc.peerSyncMu.Lock()
+		bc.peerSyncInProgress = false
+		bc.peerSyncMu.Unlock()
+	}()
 	// Full commit path (validates, executes state, stores).
 	helper := NewBlockHelper(block)
 	if err := bc.CommitBlock(helper); err != nil {
