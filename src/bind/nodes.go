@@ -46,7 +46,7 @@ import (
 	"github.com/ramseyauron/quantix/src/consensus"
 	"github.com/ramseyauron/quantix/src/core"
 	database "github.com/ramseyauron/quantix/src/core/state"
-	config "github.com/ramseyauron/quantix/src/core/sphincs/config"
+	sphincsConfig "github.com/ramseyauron/quantix/src/core/sphincs/config"
 	key "github.com/ramseyauron/quantix/src/core/sphincs/key/backend"
 	sign "github.com/ramseyauron/quantix/src/core/sphincs/sign/backend"
 	security "github.com/ramseyauron/quantix/src/handshake"
@@ -120,7 +120,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		return fmt.Errorf("failed to initialize KeyManager: %v", err)
 	}
 
-	sphincsParams, err := config.NewSPHINCSParameters()
+	sphincsParams, err := sphincsConfig.NewSPHINCSParameters()
 	if err != nil {
 		return fmt.Errorf("failed to initialize SPHINCSParameters: %v", err)
 	}
@@ -160,6 +160,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	}
 
 	resources[0].P2PServer.SetSphincsMgr(sphincsMgr)
+	resources[0].HTTPServer.SetSphincsMgr(sphincsMgr)
 
 	// Re-inject DB into the resources blockchain (same object, belt-and-suspenders)
 	resources[0].Blockchain.SetStorageDB(database.WrapLevelDB(db))
@@ -213,7 +214,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		if err != nil {
 			return fmt.Errorf("P2-PBFT: key manager: %v", err)
 		}
-		sp, err := config.NewSPHINCSParameters()
+		sp, err := sphincsConfig.NewSPHINCSParameters()
 		if err != nil {
 			return fmt.Errorf("P2-PBFT: sphincs params: %v", err)
 		}
@@ -627,7 +628,7 @@ func RunMultipleNodesInternal() error {
 			return fmt.Errorf("failed to initialize KeyManager for Node-%d: %v", i, err)
 		}
 
-		sphincsParams, err := config.NewSPHINCSParameters()
+		sphincsParams, err := sphincsConfig.NewSPHINCSParameters()
 		if err != nil {
 			return fmt.Errorf("failed to initialize SPHINCSParameters for Node-%d: %v", i, err)
 		}
@@ -945,6 +946,23 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 		tcpServers[i] = transport.NewTCPServer(config.Address, messageChans[i], rpcServers[i], tcpReadyCh)
 		wsServers[i] = transport.NewWebSocketServer(config.WSPort, messageChans[i], rpcServers[i])
 		httpServers[i] = http.NewServer(config.HTTPPort, messageChans[i], blockchains[i], readyCh)
+
+		// SEC-S03 FIX: wire SphincsManager into HTTP server so tx signatures are verified.
+		httpKM, hmErr := key.NewKeyManager()
+		if hmErr != nil {
+			logger.Warnf("SEC-S03: failed to create KeyManager for HTTP sphincsMgr on %s: %v — sig verification will be skipped", config.Name, hmErr)
+		} else {
+			httpSP, spErr := sphincsConfig.NewSPHINCSParameters()
+			if spErr != nil {
+				logger.Warnf("SEC-S03: failed to create SPHINCSParameters for HTTP sphincsMgr on %s: %v — sig verification will be skipped", config.Name, spErr)
+			} else {
+				httpSphincs := sign.NewSphincsManager(dbs[i], httpKM, httpSP)
+				if httpSphincs != nil {
+					httpServers[i].SetSphincsMgr(httpSphincs)
+					logger.Infof("✅ SEC-S03: SphincsManager wired into HTTP server for %s", config.Name)
+				}
+			}
+		}
 	}
 
 	// Bind TCP servers
@@ -1073,9 +1091,9 @@ func SetupNodes(configs []NodeSetupConfig, wg *sync.WaitGroup) ([]NodeResources,
 		}(config.Name, p2pServers[i])
 	}
 
-	// Start HTTP and WebSocket servers
+	// Start HTTP and WebSocket servers (use pre-built httpServers which have sphincsMgr wired)
 	for i, config := range configs {
-		startHTTPServer(config.Name, config.HTTPPort, messageChans[i], blockchains[i], readyCh, wg)
+		startHTTPServerFromInstance(config.Name, config.HTTPPort, httpServers[i], readyCh, wg)
 		startWebSocketServer(config.Name, config.WSPort, messageChans[i], rpcServers[i], readyCh, wg)
 	}
 

@@ -336,19 +336,22 @@ func (c *Consensus) GetElectedLeaderID() string {
 
 // ProposeBlock creates and broadcasts a new block proposal when this node is the leader
 func (c *Consensus) ProposeBlock(block Block) error {
+	// Verify leader status and build proposal under lock; release before network I/O.
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Verify this node is actually the leader
 	if !c.isLeader {
+		c.mu.Unlock()
 		return fmt.Errorf("node %s is not the leader", c.nodeID)
 	}
 
-	// Sign the block header if signing service is available
-	if c.signingService != nil {
+	// Sign the block header if signing service is available and not in dev-mode
+	if c.signingService != nil && !c.devMode {
+		c.mu.Unlock()
 		if err := c.signingService.SignBlock(block); err != nil {
 			return fmt.Errorf("failed to sign block header: %w", err)
 		}
+		c.mu.Lock()
 	}
 
 	// Update block metadata for tracking
@@ -386,8 +389,8 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	logger.Info("📝 Creating proposal: slot=%d, view=%d, leader=%s, block=%s",
 		proposalSlot, c.currentView, c.nodeID, block.GetHash())
 
-	// Sign the proposal
-	if c.signingService != nil {
+	// Sign the proposal (skip in dev-mode to avoid slow SPHINCS+ operations)
+	if c.signingService != nil && !c.devMode {
 		if err := c.signingService.SignProposal(proposal); err != nil {
 			return fmt.Errorf("failed to sign proposal: %w", err)
 		}
@@ -396,18 +399,21 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	// In DEVNET_SOLO mode we self-commit without waiting for peer votes.
 	// This avoids a deadlock where the single node waits for a quorum that
 	// can never be reached.
-	if c.ActiveConsensusMode() == DEVNET_SOLO {
+	devnetSolo := c.ActiveConsensusMode() == DEVNET_SOLO
+	c.mu.Unlock()
+
+	if devnetSolo {
 		logger.Info("⛏️  DEVNET_SOLO: self-committing block %s (no peers)", proposal.Block.GetHash())
 		c.mu.Lock()
 		c.preparedBlock = proposal.Block
 		c.lockedBlock = proposal.Block
 		c.phase = PhaseCommitted
-		c.commitBlock(proposal.Block)
 		c.mu.Unlock()
+		c.commitBlock(proposal.Block)
 		return nil
 	}
 
-	// Broadcast the proposal
+	// Broadcast the proposal (lock already released)
 	return c.broadcastProposal(proposal)
 }
 
@@ -1335,8 +1341,8 @@ func (c *Consensus) sendPrepareVote(blockHash string, view uint64) {
 		Signature: []byte{},
 	}
 
-	// Sign the vote if signing service available
-	if c.signingService != nil {
+	// Sign the vote if signing service available and not in dev-mode
+	if c.signingService != nil && !c.devMode {
 		if err := c.signingService.SignVote(prepareVote); err != nil {
 			logger.Warn("Failed to sign prepare vote: %v", err)
 			return
@@ -1375,8 +1381,8 @@ func (c *Consensus) voteForBlock(blockHash string, view uint64) {
 		Signature: []byte{},
 	}
 
-	// Sign the vote if signing service available
-	if c.signingService != nil {
+	// Sign the vote if signing service available and not in dev-mode
+	if c.signingService != nil && !c.devMode {
 		if err := c.signingService.SignVote(vote); err != nil {
 			logger.Warn("Failed to sign commit vote: %v", err)
 			return
