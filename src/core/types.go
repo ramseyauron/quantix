@@ -170,6 +170,11 @@ type Blockchain struct {
 	// When nil, signature verification is skipped (backwards-compatible for nodes
 	// that have not yet wired up a SphincsManager).
 	sigVerifier TxSigVerifier
+
+	// rewardAddress is the wallet address (64-char hex) that receives block
+	// rewards and gas fees for blocks mined by this node.  Set during
+	// NewBlockchain from the persisted validator-key.json.
+	rewardAddress string
 }
 
 // GossipBroadcaster is implemented by the P2P server and called by the
