@@ -4,6 +4,11 @@ src/p2p/data/*/keys/private.key
 src/p2p/data/*/keys/public.key
 src/p2p/data/*/keys/node_info.json
 
+# Validator reward keypair — contains SPHINCS+ private key (SEC-KEY02)
+# Generated at first node startup; must never be committed
+validator-key.json
+**/validator-key.json
+
 # LevelDB / RocksDB data directories
 src/p2p/data/*/chaindata/
 src/p2p/data/*/state.db/

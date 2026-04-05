@@ -18,8 +18,14 @@ import (
 const keyFileName = "validator-key.json"
 
 // ValidatorKey holds the persisted validator identity.
+//
+// SEC-KEY02: PrivateKeyHex is stored as plaintext hex in validator-key.json,
+// protected only by file permissions (0600).  For testnet this is acceptable;
+// production nodes MUST encrypt the private key at rest (e.g., AES-256-GCM
+// with a passphrase-derived key via Argon2id) before mainnet launch.
+// validator-key.json must never be committed to version control.
 type ValidatorKey struct {
-	Address      string `json:"address"`
+	Address       string `json:"address"`
 	PrivateKeyHex string `json:"private_key_hex"`
 	PublicKeyHex  string `json:"public_key_hex"`
 }
