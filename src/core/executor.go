@@ -283,9 +283,10 @@ func (bc *Blockchain) ExecuteBlock(block *types.Block) ([]byte, error) {
 }
 
 // ExecuteGenesisBlock runs ExecuteBlock on block 0 so mintBlockReward fires
-// and credits GenesisVaultAddress with the full allocation supply.
+// and credits GenesisVaultAddress with the full allocation supply, then
+// distributes from the vault to each genesis allocation address.
 // Must be called AFTER SetStorageDB — it needs a live DB handle.
-// It is idempotent: if the vault already has a non-zero balance it returns nil.
+// It is idempotent: if the first allocation already has a non-zero balance it returns nil.
 func (bc *Blockchain) ExecuteGenesisBlock() error {
 	bc.lock.RLock()
 	if len(bc.chain) == 0 || bc.chain[0] == nil {
@@ -295,20 +296,61 @@ func (bc *Blockchain) ExecuteGenesisBlock() error {
 	genesisBlock := bc.chain[0]
 	bc.lock.RUnlock()
 
-	// Idempotency: skip if vault was already funded.
+	// Idempotency: skip if allocations were already distributed.
+	allocs := DefaultGenesisAllocations()
 	stateDB, err := bc.newStateDB()
 	if err != nil {
 		return fmt.Errorf("ExecuteGenesisBlock: %w", err)
 	}
-	if stateDB.GetBalance(GenesisVaultAddress).Sign() > 0 {
-		logger.Info("ExecuteGenesisBlock: vault already funded, skipping")
+	if len(allocs) > 0 && stateDB.GetBalance(allocs[0].Address).Sign() > 0 {
+		logger.Info("ExecuteGenesisBlock: allocations already distributed, skipping")
 		return nil
 	}
 
+	// Step 1: Execute block 0 — mints entire genesis supply to GenesisVaultAddress.
 	if _, err := bc.ExecuteBlock(genesisBlock); err != nil {
 		return fmt.Errorf("ExecuteGenesisBlock: %w", err)
 	}
-
 	logger.Info("✅ ExecuteGenesisBlock: vault %s funded", GenesisVaultAddress)
+
+	// Step 2: Distribute from vault to each allocation address.
+	// The genesis block body contains funding txs with sender="genesis" which
+	// applyTransactions skips (no real signing key). We apply them here by
+	// debiting the vault and crediting each allocation address directly.
+	stateDB2, err := bc.newStateDB()
+	if err != nil {
+		return fmt.Errorf("ExecuteGenesisBlock: open stateDB for distribution: %w", err)
+	}
+
+	for _, alloc := range allocs {
+		if alloc.BalanceNQTX == nil || alloc.BalanceNQTX.Sign() <= 0 {
+			continue
+		}
+		if err := stateDB2.SubBalance(GenesisVaultAddress, alloc.BalanceNQTX); err != nil {
+			return fmt.Errorf("ExecuteGenesisBlock: SubBalance vault for %s: %w", alloc.Address, err)
+		}
+		stateDB2.AddBalance(alloc.Address, alloc.BalanceNQTX)
+		logger.Info("ExecuteGenesisBlock: distribute %s nQTX → %s (%s)",
+			alloc.BalanceNQTX.String(), alloc.Address, alloc.Label)
+	}
+
+	stateRoot, err := stateDB2.Commit()
+	if err != nil {
+		return fmt.Errorf("ExecuteGenesisBlock: commit distribution: %w", err)
+	}
+
+	// Patch the genesis block header with the real state root.
+	bc.lock.Lock()
+	if len(bc.chain) > 0 && bc.chain[0] != nil {
+		bc.chain[0].Header.StateRoot = stateRoot
+		bc.chain[0].FinalizeHash()
+		if storeErr := bc.storage.StoreBlock(bc.chain[0]); storeErr != nil {
+			logger.Warn("ExecuteGenesisBlock: re-store genesis block: %v", storeErr)
+		}
+	}
+	bc.lock.Unlock()
+
+	logger.Info("✅ ExecuteGenesisBlock: %d allocations distributed, state_root=%x",
+		len(allocs), stateRoot)
 	return nil
 }
