@@ -304,15 +304,11 @@ func (b *Block) GenerateBlockHash() []byte {
 		b.Header.UnclesHash = calculatedUnclesHash // Update if mismatch
 	}
 
-	// Ensure TxsRoot is calculated from Merkle tree
-	// Verify that the transaction root matches the actual transactions
-	if len(b.Body.TxsList) > 0 {
-		calculatedMerkleRoot := b.CalculateTxsRoot()
-		if !bytes.Equal(b.Header.TxsRoot, calculatedMerkleRoot) {
-			log.Printf("WARNING: TxsRoot doesn't match calculated Merkle root, updating TxsRoot")
-			b.Header.TxsRoot = calculatedMerkleRoot // Update if mismatch
-		}
-	} else {
+	// TxsRoot: trust what was set during block creation (avoids expensive SpxHash Merkle recomputation).
+	// Only compute if TxsRoot is empty (not yet set).
+	if len(b.Body.TxsList) > 0 && len(b.Header.TxsRoot) == 0 {
+		b.Header.TxsRoot = b.CalculateTxsRoot()
+	} else if len(b.Body.TxsList) == 0 {
 		// For empty blocks, ensure TxsRoot is the hash of empty data
 		emptyHash := common.SpxHash([]byte{})
 		if len(b.Header.TxsRoot) == 0 || !bytes.Equal(b.Header.TxsRoot, emptyHash) {
