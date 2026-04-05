@@ -180,6 +180,15 @@ func (bc *Blockchain) SetGossipBroadcaster(b GossipBroadcaster) {
 	bc.gossipBroadcaster = b
 }
 
+// SetSigVerifier injects the SPHINCS+ signature verifier used by the executor
+// for SEC-E03 transaction signature verification.  Must be called before
+// CommitBlock if full signature checking is desired.  Safe to call concurrently.
+func (bc *Blockchain) SetSigVerifier(v TxSigVerifier) {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	bc.sigVerifier = v
+}
+
 // AddBlockFromPeer validates and commits a block received from the gossip
 // network.  It is separate from CommitBlock to avoid re-broadcasting the
 // block to the network (which would create an infinite loop).

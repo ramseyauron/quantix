@@ -24,12 +24,19 @@
 package core
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"math/big"
 
 	types "github.com/ramseyauron/quantix/src/core/transaction"
 	logger "github.com/ramseyauron/quantix/src/log"
 )
+
+// sha256Bytes returns the SHA-256 digest of b as a byte slice.
+func sha256Bytes(b []byte) []byte {
+	h := sha256.Sum256(b)
+	return h[:]
+}
 
 // maxSupplyNSPX is the hard cap: 5 billion QTX expressed in nQTX.
 var maxSupplyNSPX = new(big.Int).Mul(
@@ -102,22 +109,36 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 			return fmt.Errorf("tx[%d] %s: sanity check failed: %w", i, tx.ID, err)
 		}
 
-		// SEC-E03: Signature verification at the execution layer.
-		// The mempool checks signatures on ingest, but blocks received via
-		// direct peer broadcast or archive sync bypass the mempool.  We add a
-		// hook here so a signing-service can be wired in later without changing
-		// the execution API.
+		// SEC-E03: Execution-layer signature verification.
+		// Blocks received via direct peer broadcast or archive sync bypass the
+		// mempool, so we must re-verify here.  Verification requires:
+		//   1. bc.sigVerifier — a TxSigVerifier injected via SetSigVerifier
+		//   2. tx.SenderPublicKey — the raw SPHINCS+ public key bytes
+		//   3. tx.Signature, SigTimestamp, SigNonce — from SignMessage
 		//
-		// TODO(JARVIS): inject bc.signingService (SphincsManager) into Blockchain
-		// struct, then replace this comment with:
-		//   if bc.signingService != nil {
-		//       if ok := bc.signingService.VerifySignature(tx.Message(), tx.Timestamp,
-		//           tx.Nonce, tx.Signature, tx.PublicKey, tx.MerkleRoot, tx.Commitment); !ok {
-		//           return fmt.Errorf("tx[%d] %s: invalid signature", i, tx.ID)
-		//       }
-		//   }
-		// Tracked as SEC-E03; wiring requires access to the per-sender public key
-		// which is not yet stored on-chain — prerequisite for USI/Fingerprint work.
+		// If the sender's public key is not yet on-chain, we register it on
+		// first use (validated against the Fingerprint / SHA-256(pubkey) binding).
+		// If sigVerifier is nil, verification is skipped (devnet backwards compat).
+		if bc.sigVerifier != nil && len(tx.Signature) > 0 {
+			pubKey := tx.SenderPublicKey
+			if len(pubKey) == 0 {
+				// Attempt to load a previously registered public key from StateDB.
+				pubKey = stateDB.GetPublicKey(tx.Sender)
+			}
+			if len(pubKey) == 0 {
+				return fmt.Errorf("tx[%d] %s: SEC-E03: sender public key not available for signature verification", i, tx.ID)
+			}
+			// Build canonical message: SHA-256("sender:receiver:amount:nonce")
+			canonicalPreimage := tx.Sender + ":" + tx.Receiver + ":" + tx.Amount.String() + ":" + fmt.Sprintf("%d", tx.Nonce)
+			canonicalMsg := sha256Bytes([]byte(canonicalPreimage))
+			if !bc.sigVerifier.VerifyTxSignature(canonicalMsg, tx.SigTimestamp, tx.SigNonce, tx.Signature, pubKey) {
+				return fmt.Errorf("tx[%d] %s: SEC-E03: invalid SPHINCS+ signature", i, tx.ID)
+			}
+			// Register the public key on first appearance (fingerprint-bound).
+			if len(tx.SenderPublicKey) > 0 {
+				stateDB.RegisterPublicKey(tx.Sender, tx.SenderPublicKey)
+			}
+		}
 
 		expected := stateDB.GetNonce(tx.Sender)
 		if tx.Nonce != expected {

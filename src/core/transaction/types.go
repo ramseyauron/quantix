@@ -89,7 +89,8 @@ type Transaction struct {
 	Nonce       uint64   `json:"nonce"`
 	Timestamp   int64    `json:"timestamp"`
 	Signature   []byte   `json:"signature"`
-	Fingerprint string   `json:"fingerprint,omitempty"` // USI fingerprint of sender (SHA-256 of SPHINCS+ pubkey)
+	Fingerprint     string `json:"fingerprint,omitempty"`       // USI fingerprint of sender (SHA-256 of SPHINCS+ pubkey)
+	SenderPublicKey []byte `json:"sender_public_key,omitempty"` // SEC-E03: raw SPHINCS+ public key bytes for sig verification
 
 	// SEC-S01: SPHINCS+ signing metadata — required for full Pedersen commitment verification.
 	// All four fields are returned by SignMessage and must be populated by the client.
