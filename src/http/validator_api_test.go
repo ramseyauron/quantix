@@ -32,19 +32,6 @@ func validatorRegisterRequest(body string) *http.Request {
 
 // newTestServer builds a minimal Server with a temporary blockchain,
 // wires the gin router, and returns it ready for use with httptest.
-func newTestServer(t *testing.T) *Server {
-	t.Helper()
-	dir := t.TempDir()
-
-	bc, err := newTestBlockchain(t, dir)
-	if err != nil {
-		t.Fatalf("newTestBlockchain: %v", err)
-	}
-
-	srv := NewServer(":0", nil, bc, nil)
-	bc.SetDevMode(true) // enable dev-mode for faucet and other dev endpoints
-	return srv
-}
 
 // ---------------------------------------------------------------------------
 // Q10-A: POST /validator/register → 200 OK, validator stored
