@@ -68,6 +68,8 @@ func makeTxWithSig(sender, receiver string, amount int64, nonce uint64, pubKey [
 }
 
 // newBlockchainWithVerifier creates a test blockchain with the mock verifier injected.
+// devMode is intentionally FALSE so that SEC-E03 signature verification is active.
+// All test sender accounts must be seeded with sufficient balance in seeds.
 func newBlockchainWithVerifier(t *testing.T, verifier *mockSigVerifier, seeds map[string]*big.Int) (*Blockchain, *database.DB) {
 	t.Helper()
 	db := newTestDB(t)
@@ -76,7 +78,7 @@ func newBlockchainWithVerifier(t *testing.T, verifier *mockSigVerifier, seeds ma
 	if verifier != nil {
 		bc.SetSigVerifier(verifier)
 	}
-	bc.SetDevMode(true) // so balance checks on test addresses pass
+	// devMode=false so SEC-E03 sig verification is active (dadd29b: devMode bypasses check)
 	return bc, db
 }
 
@@ -310,5 +312,51 @@ func TestCryptographicSovereignty_SEC_E03_RealRejection(t *testing.T) {
 
 	if verifier.calls < 1 {
 		t.Error("verifier should have been called at least once")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dadd29b: devMode bypasses SEC-E03 sig verification
+// ---------------------------------------------------------------------------
+
+// TestSECE03_DevMode_BypassesSigVerification verifies that when devMode=true,
+// the executor skips signature verification even if a verifier is injected and
+// the pubkey is wrong. Testnet/devnet transactions use placeholder sigs.
+func TestSECE03_DevMode_BypassesSigVerification(t *testing.T) {
+	verifier := newMockVerifier(alicePubKey) // only real alice key accepted
+	db := newTestDB(t)
+	seedStateDB(t, db, map[string]*big.Int{
+		secE03Alice: big.NewInt(1000),
+	})
+	bc := minimalBC(t, db)
+	bc.SetSigVerifier(verifier)
+	bc.SetDevMode(true) // dev-mode: sig check bypassed per dadd29b
+
+	// Tx with wrong pubkey — should be accepted in devMode despite injected verifier
+	tx := makeTxWithSig(secE03Alice, secE03Bob, 100, 0, fakePubKey)
+	_, err := bc.ExecuteBlock(makeBlockE03([]*types.Transaction{tx}))
+	if err != nil {
+		t.Errorf("devMode should bypass SEC-E03 sig check: %v", err)
+	}
+	// Verifier should NOT have been called (skipped by devMode gate)
+	if verifier.calls > 0 {
+		t.Errorf("verifier should not be called in devMode: calls=%d", verifier.calls)
+	}
+}
+
+// TestSECE03_ProdMode_EnforcesSigVerification verifies that with devMode=false,
+// sig verification IS enforced (accounts properly funded in seeds).
+func TestSECE03_ProdMode_EnforcesSigVerification(t *testing.T) {
+	verifier := newMockVerifier(alicePubKey)
+	bc, _ := newBlockchainWithVerifier(t, verifier, map[string]*big.Int{
+		secE03Alice: big.NewInt(1000),
+	})
+	// bc.devMode is false — SEC-E03 is active
+
+	// Wrong pubkey in prod-mode → must be rejected
+	tx := makeTxWithSig(secE03Alice, secE03Bob, 100, 0, fakePubKey)
+	_, err := bc.ExecuteBlock(makeBlockE03([]*types.Transaction{tx}))
+	if err == nil {
+		t.Error("prod-mode should enforce SEC-E03 sig verification")
 	}
 }
