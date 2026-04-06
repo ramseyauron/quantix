@@ -176,3 +176,9 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 	log.Printf("[SYNC] Caught up with seed %s at block %d", peerBase, bc.GetBlockCount())
 	return nil
 }
+
+// SyncFromPeerHTTP is a public wrapper around syncFromPeer for use by external callers
+// (e.g., the sync heartbeat goroutine in bind/nodes.go).
+func (bc *Blockchain) SyncFromPeerHTTP(peerBaseURL string) error {
+	return bc.syncFromPeer(peerBaseURL)
+}

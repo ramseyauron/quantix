@@ -513,7 +513,12 @@ func (c *Consensus) GetCurrentHeight() uint64 {
 func (c *Consensus) shouldPreventViewChange() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	// Block view change if we're in prepare phases
+	// Block view change if we're in prepare phases — but not if we've been stuck for > 30s.
+	// A long stall means the phase will never complete; force a view change to recover.
+	stuckTooLong := time.Since(c.lastProposalTime) > 30*time.Second
+	if stuckTooLong {
+		return false // Allow view change to break the deadlock
+	}
 	if c.phase == PhasePrePrepared || c.phase == PhasePrepared {
 		return true
 	}
@@ -1643,6 +1648,7 @@ func (c *Consensus) commitBlock(block Block) {
 	// Update consensus state
 	c.currentHeight = block.GetHeight()
 	c.lastBlockTime = common.GetTimeService().Now()
+	c.lastProposalTime = common.GetTimeService().Now() // reset so shouldPreventViewChange doesn't immediately expire
 	// Clear sticky-proposal for the committed height
 	if c.lastPreparedHeight <= block.GetHeight() {
 		c.lastPreparedBlock = nil
@@ -1675,7 +1681,7 @@ func (c *Consensus) startViewChange() {
 			c.mu.Unlock()
 			return // Only change view in idle phase
 		}
-		if common.GetTimeService().Now().Sub(c.lastViewChange) < 60*time.Second {
+		if common.GetTimeService().Now().Sub(c.lastViewChange) < 10*time.Second {
 			c.mu.Unlock()
 			return // Rate limit view changes
 		}

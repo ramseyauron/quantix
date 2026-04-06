@@ -297,6 +297,37 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		if err := resources[0].Blockchain.SyncFromSeeds(); err != nil {
 			log.Printf("⚠️  P2-SYNC warning: %v", err)
 		}
+
+		// SYNC HEARTBEAT: every 30s, check if we are behind any seed peer and catch up.
+		go func(bc *core.Blockchain, peers []string) {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			client := &nethttp.Client{Timeout: 10 * time.Second}
+			for range ticker.C {
+				localH := bc.GetBlockCount()
+				for _, peer := range peers {
+					resp, err := client.Get(peer + "/blockcount")
+					if err != nil {
+						continue
+					}
+					var cr struct {
+						Count uint64 `json:"count"`
+					}
+					_ = json.NewDecoder(resp.Body).Decode(&cr)
+					resp.Body.Close()
+					if cr.Count > localH {
+						log.Printf("💤 Sync heartbeat: local height=%d peer height=%d — catching up from %s", localH, cr.Count, peer)
+						if err := bc.SyncFromPeerHTTP(peer); err != nil {
+							log.Printf("⚠️  Sync heartbeat catchup error: %v", err)
+						} else {
+							localH = bc.GetBlockCount()
+							log.Printf("✅ Sync heartbeat: caught up to height=%d", localH)
+						}
+						break
+					}
+				}
+			}
+		}(resources[0].Blockchain, seedHTTPs)
 	}
 
 	// Fix 2: dev-mode peer validator auto-registration.

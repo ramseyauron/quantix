@@ -801,6 +801,8 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 	leaderMutex := sync.Mutex{}
 	// Flag indicating if a proposal is in progress
 	var isProposing bool
+	// Height at which the current proposal was started (used to detect commit and reset faster)
+	var proposingAtHeight uint64
 
 	// Start goroutine for leader loop
 	go func() {
@@ -834,11 +836,20 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 				// Check if we're already proposing (prevent concurrent proposals)
 				leaderMutex.Lock()
 				if isProposing {
-					leaderMutex.Unlock()
-					logger.Debug("Leader: already proposing block, skipping")
-					continue
+					// Fast-reset: if chain has advanced past the height we were proposing at,
+					// the block was committed by another path (e.g., gossip/follower) — safe to reset.
+					currentChainHeight := bc.GetBlockCount()
+					if currentChainHeight > proposingAtHeight {
+						logger.Info("Leader: block at height %d committed externally — resetting isProposing", proposingAtHeight)
+						isProposing = false
+					} else {
+						leaderMutex.Unlock()
+						logger.Debug("Leader: already proposing block, skipping")
+						continue
+					}
 				}
 				isProposing = true // Mark as proposing
+				proposingAtHeight = bc.GetBlockCount()
 				leaderMutex.Unlock()
 
 				// Log proposal start
@@ -851,7 +862,11 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 				var block *types.Block
 				lastPrepared, lastPreparedHeight := bc.consensusEngine.GetLastPreparedBlock()
 				currentHeight := bc.GetBlockCount()
-				if lastPrepared != nil && lastPreparedHeight == currentHeight+1 {
+				// lastPreparedHeight is the consensus height WHEN quorum was reached
+				// (= latest committed height at that point). The prepared block is
+				// at lastPreparedHeight+1. currentHeight == GetBlockCount() == latestHeight+1.
+				// So re-use when: lastPreparedHeight+1 == currentHeight
+				if lastPrepared != nil && lastPreparedHeight+1 == currentHeight {
 					// Re-use the previously prepared block (same hash, same txs, same timestamp)
 					if helper, ok := lastPrepared.(interface{ GetUnderlyingBlock() *types.Block }); ok {
 						block = helper.GetUnderlyingBlock()
@@ -901,12 +916,19 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 
 				// Reset proposing flag after a delay to allow consensus to complete
 				// Launch goroutine to wait and reset
-				go func() {
-					time.Sleep(30 * time.Second) // Wait for consensus to complete
+				go func(proposedAtHeight uint64) {
+					// Poll for chain advancement (block committed) or timeout
+					deadline := time.Now().Add(20 * time.Second)
+					for time.Now().Before(deadline) {
+						time.Sleep(1 * time.Second)
+						if bc.GetBlockCount() > proposedAtHeight {
+							break // block committed, reset immediately
+						}
+					}
 					leaderMutex.Lock()
 					isProposing = false // Reset proposing flag
 					leaderMutex.Unlock()
-				}()
+				}(proposingAtHeight)
 			}
 		}
 	}()

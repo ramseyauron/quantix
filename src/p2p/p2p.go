@@ -671,6 +671,23 @@ func (s *Server) handleMessages() {
 				// block must not be blacklisted — a future re-delivery should retry.
 				if err := s.blockchain.AddBlockFromPeer(block); err != nil {
 					log.Printf("gossip_block: failed to add block height=%d hash=%s: %v", block.GetHeight(), block.GetHash(), err)
+					// Height gap: if this block is ahead of our chain, retry after a short delay
+					// to allow the parent block to arrive via gossip or sync.
+					localBlock := s.blockchain.GetLatestBlock()
+					localHeight := uint64(0)
+					if localBlock != nil {
+						localHeight = localBlock.GetHeight()
+					}
+					if block.GetHeight() > localHeight+1 {
+						blockCopy := block
+						go func() {
+							time.Sleep(3 * time.Second)
+							if err2 := s.blockchain.AddBlockFromPeer(blockCopy); err2 == nil {
+								s.markBlockSeen(blockCopy.GetHash())
+								log.Printf("gossip_block: retry accepted block height=%d hash=%s", blockCopy.GetHeight(), blockCopy.GetHash())
+							}
+						}()
+					}
 				} else {
 					s.markBlockSeen(block.GetHash())
 					log.Printf("gossip_block: accepted block height=%d hash=%s", block.GetHeight(), block.GetHash())
