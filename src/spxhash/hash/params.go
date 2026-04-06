@@ -31,15 +31,12 @@ const (
 	prime64  = 0x9e3779b97f4a7c15 // Example prime constant for 64-bit hash
 	saltSize = 16                 // Size of salt in bytes (128 bits = 16 bytes)
 
-	// Argon2 parameters
-	// OWASP have published guidance on Argon2 at https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
-	// At time of writing (Jan 2023), this says:
-	// Argon2id should use one of the following configuration settings as a base minimum which includes the minimum memory size (m), the minimum number of iterations (t) and the degree of parallelism (p).
-	// m=37 MiB, t=1, p=1
-	// m=15 MiB, t=2, p=1
-	// Both of these configuration settings are equivalent in the defense they provide. The only difference is a trade off between CPU and RAM usage.
-	memory           = 64 * 1024 // Memory cost set to 64 KiB (64 * 1024 bytes) is for demonstration purpose
-	iterations       = 2         // Number of iterations for Argon2id set to 2
+	// Argon2 parameters (tuned for blockchain hashing performance, not password storage)
+	// Note: argon2.IDKey memory parameter is in KiB.
+	// These values are intentionally low for a hash function used in block headers;
+	// this is not password storage — security here comes from chain structure, not KDF hardness.
+	memory           = 64   // Memory cost: 64 KiB (fast for blockchain hashing)
+	iterations       = 1    // Number of iterations for Argon2id
 	parallelism      = 1         // Degree of parallelism set to 1
 	tagSize          = 32        // Tag size set to 256 bits (32 bytes)
 	DefaultCacheSize = 100       // Default cache size for SphinxHash
