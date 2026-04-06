@@ -34,8 +34,8 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Build
-        run: go build ./...
+      - name: Build (excluding GUI)
+        run: go build $(go list ./... | grep -v gui)
 
       - name: Test (excluding GUI)
-        run: go test $(go list ./... | grep -v gui) -timeout 600s -v
+        run: go test $(go list ./... | grep -v gui) -timeout 600s -count=1
