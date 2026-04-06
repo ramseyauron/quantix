@@ -111,6 +111,7 @@ var stringToOp = map[string]OpCode{
 	"SHA512_224":              SHA512_224,
 	"SHA512_256":              SHA512_256,
 	"SHA3_Shake256":           SHA3_Shake256,
+	"SphinxHash":              SphinxHash,
 	"Xor":                     Xor,
 	"Or":                      Or,
 	"And":                     And,
