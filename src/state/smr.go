@@ -342,6 +342,17 @@ func (sm *StateMachine) convertToFinalStateInfo(sig *consensus.ConsensusSignatur
 	if err == nil && block != nil {
 		merkleRoot = sm.extractMerkleRootFromBlock(block)
 		blockTimestamp = block.GetTimestamp()
+	} else if sig.BlockHeight > 0 {
+		// Hash lookup failed — block hash may have changed after CommitBlock
+		// stamped the real StateRoot and called FinalizeHash. Fall back to
+		// height-based lookup so the SMR status is not left as block_not_found.
+		if b2, err2 := sm.storage.GetBlockByHeight(sig.BlockHeight); err2 == nil && b2 != nil {
+			merkleRoot = sm.extractMerkleRootFromBlock(b2)
+			blockTimestamp = b2.GetTimestamp()
+		} else {
+			merkleRoot = "block_not_found"
+			blockTimestamp = 0
+		}
 	} else {
 		merkleRoot = "block_not_found"
 		blockTimestamp = 0

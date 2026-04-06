@@ -666,10 +666,13 @@ func (s *Server) handleMessages() {
 					log.Printf("gossip_block: skipping already-seen block height=%d hash=%s", block.GetHeight(), block.GetHash())
 					break
 				}
-				s.markBlockSeen(block.GetHash())
+				// BUG-FIX: Only mark block as seen AFTER successful storage.
+				// If AddBlockFromPeer fails (e.g. parent not yet committed), the
+				// block must not be blacklisted — a future re-delivery should retry.
 				if err := s.blockchain.AddBlockFromPeer(block); err != nil {
-					log.Printf("gossip_block: failed to add block height=%d: %v", block.GetHeight(), err)
+					log.Printf("gossip_block: failed to add block height=%d hash=%s: %v", block.GetHeight(), block.GetHash(), err)
 				} else {
+					s.markBlockSeen(block.GetHash())
 					log.Printf("gossip_block: accepted block height=%d hash=%s", block.GetHeight(), block.GetHash())
 				}
 			} else {

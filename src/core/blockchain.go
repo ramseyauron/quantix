@@ -2749,3 +2749,14 @@ func (bc *Blockchain) DevnetMineBlock(nodeID string) (uint64, error) {
 
 	return uint64(block.Header.Height), nil
 }
+
+// GetAddressBalance returns the current balance of address from the committed
+// StateDB (LevelDB). This is authoritative — it includes block rewards and
+// gas fees that are not represented as transactions in the block body.
+func (bc *Blockchain) GetAddressBalance(address string) (*big.Int, error) {
+	stateDB, err := bc.newStateDB()
+	if err != nil {
+		return nil, fmt.Errorf("GetAddressBalance: %w", err)
+	}
+	return stateDB.GetBalance(address), nil
+}

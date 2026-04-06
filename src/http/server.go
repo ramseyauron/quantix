@@ -520,7 +520,14 @@ func (s *Server) handleGetAddress(c *gin.Context) {
 			}
 		}
 	}
-	balance := new(big.Int).Sub(totalReceived, totalSent)
+
+	// Use authoritative StateDB balance (includes block rewards + gas fees
+	// that are not recorded as transactions in the block body).
+	balance, err := s.blockchain.GetAddressBalance(addr)
+	if err != nil {
+		// Fall back to tx-derived balance if StateDB is unavailable
+		balance = new(big.Int).Sub(totalReceived, totalSent)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"address":        addr,
