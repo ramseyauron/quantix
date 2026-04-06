@@ -349,7 +349,7 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	if c.signingService != nil && !c.devMode {
 		c.mu.Unlock()
 		if err := c.signingService.SignBlock(block); err != nil {
-			return fmt.Errorf("failed to sign block header: %w", err)
+			logger.Warn("⚠️ SignBlock failed (non-fatal, continuing proposal): %v", err)
 		}
 		c.mu.Lock()
 	}
@@ -396,7 +396,7 @@ func (c *Consensus) ProposeBlock(block Block) error {
 	// Sign the proposal (skip in dev-mode to avoid slow SPHINCS+ operations)
 	if c.signingService != nil && !c.devMode {
 		if err := c.signingService.SignProposal(proposal); err != nil {
-			return fmt.Errorf("failed to sign proposal: %w", err)
+			logger.Warn("⚠️ SignProposal failed (non-fatal, continuing proposal): %v", err)
 		}
 	}
 

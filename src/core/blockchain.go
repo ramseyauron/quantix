@@ -28,7 +28,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -842,17 +841,6 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 				isProposing = true // Mark as proposing
 				leaderMutex.Unlock()
 
-				// Check if we have transactions in mempool
-				hasTxs := bc.mempool.GetTransactionCount() > 0
-				if !hasTxs {
-					// No transactions to include, reset proposing flag
-					leaderMutex.Lock()
-					isProposing = false
-					leaderMutex.Unlock()
-					logger.Debug("Leader: no pending transactions to propose")
-					continue
-				}
-
 				// Log proposal start
 				logger.Info("Leader %s: creating block with %d pending transactions",
 					bc.consensusEngine.GetNodeID(), bc.mempool.GetTransactionCount())
@@ -1336,28 +1324,24 @@ func (bc *Blockchain) CreateBlock() (*types.Block, error) {
 	pendingTxs := bc.mempool.GetPendingTransactions()
 	logger.Info("[DIAG] CreateBlock: pendingPool=%d allTxs=%d",
 		len(pendingTxs), bc.mempool.GetTransactionCount())
+	// Note: empty blocks are allowed for PBFT heartbeat/reward blocks.
+	// The leader must be able to propose even when the mempool is empty.
 	if len(pendingTxs) == 0 {
-		return nil, errors.New("no pending transactions in mempool")
+		logger.Info("CreateBlock: mempool empty — creating empty block for PBFT")
+	} else {
+		logger.Info("Found %d pending transactions in mempool, max block size: %d bytes",
+			len(pendingTxs), bc.chainParams.MaxBlockSize)
 	}
 
-	logger.Info("Found %d pending transactions in mempool, max block size: %d bytes",
-		len(pendingTxs), bc.chainParams.MaxBlockSize)
-
-	// Select transactions based on block size constraints
+	// Select transactions based on block size constraints (may return empty slice for empty mempool)
 	selectedTxs, totalSize, err := bc.selectTransactionsForBlock(pendingTxs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select transactions: %w", err)
 	}
 
-	// Check if any transactions were selected
-	if len(selectedTxs) == 0 {
-		return nil, errors.New("no transactions could be selected for block")
-	}
-
 	// Log block creation details
-	logger.Info("Creating block with %d transactions, estimated size: %d bytes (limit: %d, utilization: %.2f%%)",
-		len(selectedTxs), totalSize, bc.chainParams.MaxBlockSize,
-		float64(totalSize)/float64(bc.chainParams.MaxBlockSize)*100)
+	logger.Info("Creating block with %d transactions, estimated size: %d bytes (limit: %d)",
+		len(selectedTxs), totalSize, bc.chainParams.MaxBlockSize)
 
 	// Calculate roots for the block
 	txsRoot := bc.calculateTransactionsRoot(selectedTxs) // Merkle root of transactions
