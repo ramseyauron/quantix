@@ -244,14 +244,30 @@ func (bc *Blockchain) distributeGasFee(gasFee *big.Int, proposerID string, attes
 	stateDB.DecrementTotalSupply(burnAmt)
 	stateDB.AddBalance(proposerID, proposerAmt)
 
-	if len(attestations) > 0 && attestorPool.Sign() > 0 {
-		perAttestor := new(big.Int).Div(attestorPool, big.NewInt(int64(len(attestations))))
-		if perAttestor.Sign() > 0 {
-			for _, att := range attestations {
-				if att.ValidatorID != "" {
-					stateDB.AddBalance(att.ValidatorID, perAttestor)
-				}
-			}
+	// SEC-DUP01: deduplicate attestor IDs before reward loop
+	seenGas := make(map[string]struct{})
+	uniqueAttestorsGas := []string{}
+	for _, att := range attestations {
+		id := att.ValidatorID
+		if id == "" || id == proposerID {
+			continue
+		}
+		if _, exists := seenGas[id]; !exists {
+			seenGas[id] = struct{}{}
+			uniqueAttestorsGas = append(uniqueAttestorsGas, id)
+		}
+	}
+
+	if len(uniqueAttestorsGas) > 0 && attestorPool.Sign() > 0 {
+		n := int64(len(uniqueAttestorsGas))
+		perAttestor := new(big.Int).Div(attestorPool, big.NewInt(n))
+		// SEC-DUST01: credit remainder to proposer
+		remainder := new(big.Int).Mod(attestorPool, big.NewInt(n))
+		for _, attID := range uniqueAttestorsGas {
+			stateDB.AddBalance(attID, perAttestor)
+		}
+		if remainder.Sign() > 0 {
+			stateDB.AddBalance(proposerID, remainder)
 		}
 	} else if proposerID != "" {
 		// No attestors: give attestor pool to proposer
@@ -339,16 +355,32 @@ func (bc *Blockchain) mintBlockReward(block *types.Block, stateDB *StateDB) {
 	stateDB.AddBalance(proposerID, proposerShare)
 	stateDB.IncrementTotalSupply(reward)
 
-	attestorIDs := make([]string, 0, len(attestations))
-	if len(attestations) > 0 {
-		perAttestor := new(big.Int).Div(attestorPool, big.NewInt(int64(len(attestations))))
-		if perAttestor.Sign() > 0 {
-			for _, att := range attestations {
-				if att.ValidatorID != "" {
-					stateDB.AddBalance(att.ValidatorID, perAttestor)
-					attestorIDs = append(attestorIDs, att.ValidatorID)
-				}
-			}
+	// SEC-DUP01: deduplicate attestor IDs before reward loop
+	seenRwd := make(map[string]struct{})
+	uniqueAttestorsRwd := []string{}
+	for _, att := range attestations {
+		id := att.ValidatorID
+		if id == "" || id == proposerID {
+			continue
+		}
+		if _, exists := seenRwd[id]; !exists {
+			seenRwd[id] = struct{}{}
+			uniqueAttestorsRwd = append(uniqueAttestorsRwd, id)
+		}
+	}
+
+	attestorIDs := make([]string, 0, len(uniqueAttestorsRwd))
+	if len(uniqueAttestorsRwd) > 0 {
+		n := int64(len(uniqueAttestorsRwd))
+		perAttestor := new(big.Int).Div(attestorPool, big.NewInt(n))
+		// SEC-DUST01: credit remainder to proposer
+		remainder := new(big.Int).Mod(attestorPool, big.NewInt(n))
+		for _, attID := range uniqueAttestorsRwd {
+			stateDB.AddBalance(attID, perAttestor)
+			attestorIDs = append(attestorIDs, attID)
+		}
+		if remainder.Sign() > 0 {
+			stateDB.AddBalance(proposerID, remainder)
 		}
 	} else {
 		// No attestors (genesis, devmode early blocks): 100% to proposer
@@ -357,9 +389,9 @@ func (bc *Blockchain) mintBlockReward(block *types.Block, stateDB *StateDB) {
 
 	proposerSPX := new(big.Float).Quo(new(big.Float).SetInt(proposerShare), new(big.Float).SetInt(big.NewInt(1e18)))
 	attestorSPX := new(big.Float)
-	if len(attestations) > 0 {
+	if len(uniqueAttestorsRwd) > 0 {
 		attestorSPX.Quo(
-			new(big.Float).SetInt(new(big.Int).Div(attestorPool, big.NewInt(int64(len(attestations))))),
+			new(big.Float).SetInt(new(big.Int).Div(attestorPool, big.NewInt(int64(len(uniqueAttestorsRwd))))),
 			new(big.Float).SetInt(big.NewInt(1e18)),
 		)
 	}
