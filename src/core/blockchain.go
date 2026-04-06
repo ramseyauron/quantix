@@ -845,16 +845,37 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 				logger.Info("Leader %s: creating block with %d pending transactions",
 					bc.consensusEngine.GetNodeID(), bc.mempool.GetTransactionCount())
 
-				// Create and propose block using existing CreateBlock function
-				// This now includes nonce iteration internally
-				block, err := bc.CreateBlock()
-				if err != nil {
-					// Block creation failed, reset proposing flag
-					logger.Warn("Leader: failed to create block: %v", err)
-					leaderMutex.Lock()
-					isProposing = false
-					leaderMutex.Unlock()
-					continue
+				// STICKY PROPOSAL: Check if there's a prepared block from a previous view
+				// that hasn't been committed yet. If so, re-propose the SAME block (same hash)
+				// instead of creating a fresh block with a new timestamp.
+				var block *types.Block
+				lastPrepared, lastPreparedHeight := bc.consensusEngine.GetLastPreparedBlock()
+				currentHeight := bc.GetBlockCount()
+				if lastPrepared != nil && lastPreparedHeight == currentHeight+1 {
+					// Re-use the previously prepared block (same hash, same txs, same timestamp)
+					if helper, ok := lastPrepared.(interface{ GetUnderlyingBlock() *types.Block }); ok {
+						block = helper.GetUnderlyingBlock()
+					} else if direct, ok := lastPrepared.(*types.Block); ok {
+						block = direct
+					}
+					if block != nil {
+						logger.Info("♻️ Leader %s: re-proposing lastPreparedBlock hash=%s height=%d (view change recovery)",
+							bc.consensusEngine.GetNodeID(), block.GetHash(), block.GetHeight())
+					}
+				}
+
+				// If no prepared block to re-use, create a fresh block
+				if block == nil {
+					var err error
+					block, err = bc.CreateBlock()
+					if err != nil {
+						// Block creation failed, reset proposing flag
+						logger.Warn("Leader: failed to create block: %v", err)
+						leaderMutex.Lock()
+						isProposing = false
+						leaderMutex.Unlock()
+						continue
+					}
 				}
 
 				// BUG 1 FIX: Set ProposerID before serializing into ProposalMsg

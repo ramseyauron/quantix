@@ -291,6 +291,12 @@ type Consensus struct {
 	// P2-5: partition detection — track when last proposal arrived
 	lastProposalTime time.Time // updated each time a proposal is processed
 
+	// Sticky proposal: track last block that achieved PrepareVote quorum
+	// so new leader after view-change can re-propose the same block (same hash)
+	// instead of creating a fresh block with a different timestamp.
+	lastPreparedBlock  Block  // block that reached prepare quorum
+	lastPreparedHeight uint64 // height of lastPreparedBlock
+
 	// P2-4: devMode skips SPHINCS+ sig verification on votes/proposals for testnet
 	devMode bool
 }

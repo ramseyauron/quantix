@@ -485,6 +485,16 @@ func (c *Consensus) IsLeader() bool {
 	return c.isLeader
 }
 
+// GetLastPreparedBlock returns the block that last achieved PrepareVote quorum
+// and the height at which it was prepared. Returns nil if none.
+// Used by the leader loop after a view change to re-propose the same block
+// instead of creating a new one with a different timestamp/hash.
+func (c *Consensus) GetLastPreparedBlock() (Block, uint64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastPreparedBlock, c.lastPreparedHeight
+}
+
 // GetPhase returns the current consensus phase
 func (c *Consensus) GetPhase() ConsensusPhase {
 	c.mu.RLock()
@@ -1011,6 +1021,11 @@ func (c *Consensus) processPrepareVote(vote *Vote) {
 			Status:       "prepared",
 		}
 		c.addConsensusSig(consensusSig)
+
+		// Sticky proposal: save prepared block for re-use after view change
+		c.lastPreparedBlock = c.preparedBlock
+		c.lastPreparedHeight = c.currentHeight
+		logger.Info("📌 Saved lastPreparedBlock hash=%s at height=%d", c.preparedBlock.GetHash(), c.currentHeight)
 
 		// Transition to prepared phase if we're in pre-prepared
 		if c.phase == PhasePrePrepared {
@@ -1628,6 +1643,11 @@ func (c *Consensus) commitBlock(block Block) {
 	// Update consensus state
 	c.currentHeight = block.GetHeight()
 	c.lastBlockTime = common.GetTimeService().Now()
+	// Clear sticky-proposal for the committed height
+	if c.lastPreparedHeight <= block.GetHeight() {
+		c.lastPreparedBlock = nil
+		c.lastPreparedHeight = 0
+	}
 	c.resetConsensusState()
 
 	logger.Info("🎉 Node %s successfully committed block %s at height %d",

@@ -81,6 +81,29 @@ func minimalGenesisState() *GenesisState {
 	}
 }
 
+// minGenesisOnce caches the result of minimalGenesisState().BuildBlock().
+// BuildBlock calls argon2 many times; caching it avoids N×~8s waits across
+// the test suite.  Tests that need determinism check (TestBuildBlock_Determinism)
+// call BuildBlock directly; all other read-only tests use cachedMinimalBlock().
+var (
+	minGenesisOnce  sync.Once
+	minGenesisBlock *types.Block
+)
+
+func cachedMinimalBlock() *types.Block {
+	minGenesisOnce.Do(func() {
+		minGenesisBlock = minimalGenesisState().BuildBlock()
+	})
+	return minGenesisBlock
+}
+
+// applyMinimalGenesis calls ApplyGenesisWithCachedBlock using cachedMinimalBlock
+// to avoid rebuilding the genesis block (argon2-heavy) on each test.
+func applyMinimalGenesis(bc *Blockchain, gs *GenesisState) error {
+	return ApplyGenesisWithCachedBlock(bc, gs, cachedMinimalBlock())
+}
+
+
 // newMinimalBlockchain builds a *Blockchain containing only the storage layer
 // and mutex — the minimum ApplyGenesis requires.
 // No goroutines, no consensus engine, no state machine, no mempool are started.
@@ -379,8 +402,9 @@ func TestAllocationToTx_AmountCopy(t *testing.T) {
 
 // TestBuildBlock_Determinism — identical state → identical hash.
 func TestBuildBlock_Determinism(t *testing.T) {
+	// b1 uses the shared cache; b2 is a fresh build — hashes must match.
+	b1 := cachedMinimalBlock()
 	gs := minimalGenesisState()
-	b1 := gs.BuildBlock()
 	b2 := gs.BuildBlock()
 
 	if b1.GetHash() != b2.GetHash() {
@@ -391,7 +415,7 @@ func TestBuildBlock_Determinism(t *testing.T) {
 // TestBuildBlock_Fields — header fields copied faithfully from GenesisState.
 func TestBuildBlock_Fields(t *testing.T) {
 	gs := minimalGenesisState()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	if block.GetHeight() != 0 {
 		t.Errorf("height: want 0, got %d", block.GetHeight())
@@ -425,7 +449,7 @@ func TestBuildBlock_Fields(t *testing.T) {
 
 // TestBuildBlock_ParentHashZero — genesis ParentHash is 32 zero bytes.
 func TestBuildBlock_ParentHashZero(t *testing.T) {
-	block := minimalGenesisState().BuildBlock()
+	block := cachedMinimalBlock()
 	parent := block.Header.ParentHash
 
 	if len(parent) != 32 {
@@ -442,7 +466,7 @@ func TestBuildBlock_ParentHashZero(t *testing.T) {
 // This guards the core bug: txs_list was always empty before the fix.
 func TestBuildBlock_BodyPopulated(t *testing.T) {
 	gs := minimalGenesisState()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	wantTxCount := len(gs.Allocations) // 2
 	gotTxCount := len(block.Body.TxsList)
@@ -454,8 +478,7 @@ func TestBuildBlock_BodyPopulated(t *testing.T) {
 
 // TestBuildBlock_TxsRootMatchesBody — header TxsRoot == Merkle(body txs).
 func TestBuildBlock_TxsRootMatchesBody(t *testing.T) {
-	gs := minimalGenesisState()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	// CalculateTxsRoot is the same function used by ValidateBlock.
 	calculatedRoot := block.CalculateTxsRoot()
@@ -469,7 +492,7 @@ func TestBuildBlock_TxsRootMatchesBody(t *testing.T) {
 
 // TestBuildBlock_TxSenderIsGenesis — all genesis txs use "genesis" as sender.
 func TestBuildBlock_TxSenderIsGenesis(t *testing.T) {
-	block := minimalGenesisState().BuildBlock()
+	block := cachedMinimalBlock()
 	for i, tx := range block.Body.TxsList {
 		if tx.Sender != "genesis" {
 			t.Errorf("txs_list[%d].Sender: want %q, got %q", i, "genesis", tx.Sender)
@@ -480,7 +503,7 @@ func TestBuildBlock_TxSenderIsGenesis(t *testing.T) {
 // TestBuildBlock_TxReceiversMatchAllocations — receiver[i] == allocation[i].Address.
 func TestBuildBlock_TxReceiversMatchAllocations(t *testing.T) {
 	gs := minimalGenesisState()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	for i, tx := range block.Body.TxsList {
 		want := gs.Allocations[i].Address
@@ -493,7 +516,7 @@ func TestBuildBlock_TxReceiversMatchAllocations(t *testing.T) {
 // TestBuildBlock_TxAmountsMatchAllocations — amount[i] == allocation[i].BalanceNQTX.
 func TestBuildBlock_TxAmountsMatchAllocations(t *testing.T) {
 	gs := minimalGenesisState()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	for i, tx := range block.Body.TxsList {
 		want := gs.Allocations[i].BalanceNQTX
@@ -505,11 +528,10 @@ func TestBuildBlock_TxAmountsMatchAllocations(t *testing.T) {
 
 // TestBuildBlock_DifferentGenesisStates — ExtraData change → different hash.
 func TestBuildBlock_DifferentGenesisStates(t *testing.T) {
-	gs1 := minimalGenesisState()
 	gs2 := minimalGenesisState()
 	gs2.ExtraData = []byte("completely-different-extra-data")
 
-	h1 := gs1.BuildBlock().GetHash()
+	h1 := cachedMinimalBlock().GetHash()
 	h2 := gs2.BuildBlock().GetHash()
 
 	if h1 == h2 {
@@ -519,8 +541,7 @@ func TestBuildBlock_DifferentGenesisStates(t *testing.T) {
 
 // TestBuildBlock_NewHashIsSelfConsistent — ValidateTxsRoot passes; root ≠ empty hash.
 func TestBuildBlock_NewHashIsSelfConsistent(t *testing.T) {
-	gs := minimalGenesisState()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	// The block must pass its own TxsRoot validation.
 	if err := block.ValidateTxsRoot(); err != nil {
@@ -543,7 +564,7 @@ func TestApplyGenesis_StoresBlock(t *testing.T) {
 	bc := newMinimalBlockchain(t)
 	gs := minimalGenesisState()
 
-	if err := ApplyGenesis(bc, gs); err != nil {
+	if err := applyMinimalGenesis(bc, gs); err != nil {
 		t.Fatalf("ApplyGenesis: %v", err)
 	}
 
@@ -567,7 +588,7 @@ func TestApplyGenesis_BodyContainsAllocations(t *testing.T) {
 	bc := newMinimalBlockchain(t)
 	gs := minimalGenesisState()
 
-	if err := ApplyGenesis(bc, gs); err != nil {
+	if err := applyMinimalGenesis(bc, gs); err != nil {
 		t.Fatalf("ApplyGenesis: %v", err)
 	}
 
@@ -594,10 +615,10 @@ func TestApplyGenesis_Idempotent(t *testing.T) {
 	bc := newMinimalBlockchain(t)
 	gs := minimalGenesisState()
 
-	if err := ApplyGenesis(bc, gs); err != nil {
+	if err := applyMinimalGenesis(bc, gs); err != nil {
 		t.Fatalf("first ApplyGenesis: %v", err)
 	}
-	if err := ApplyGenesis(bc, gs); err != nil {
+	if err := applyMinimalGenesis(bc, gs); err != nil {
 		t.Fatalf("second ApplyGenesis (should be idempotent): %v", err)
 	}
 }
@@ -606,7 +627,7 @@ func TestApplyGenesis_Idempotent(t *testing.T) {
 func TestApplyGenesis_ConflictReturnsError(t *testing.T) {
 	bc := newMinimalBlockchain(t)
 
-	if err := ApplyGenesis(bc, minimalGenesisState()); err != nil {
+	if err := applyMinimalGenesis(bc, minimalGenesisState()); err != nil {
 		t.Fatalf("initial ApplyGenesis: %v", err)
 	}
 
@@ -623,7 +644,7 @@ func TestApplyGenesis_ConflictReturnsError(t *testing.T) {
 func TestApplyGenesis_WritesGenesisStateJSON(t *testing.T) {
 	bc := newMinimalBlockchain(t)
 
-	if err := ApplyGenesis(bc, minimalGenesisState()); err != nil {
+	if err := applyMinimalGenesis(bc, minimalGenesisState()); err != nil {
 		t.Fatalf("ApplyGenesis: %v", err)
 	}
 
@@ -642,7 +663,7 @@ func TestApplyGenesis_WritesGenesisStateJSON(t *testing.T) {
 func TestApplyGenesis_JSONContainsAllocations(t *testing.T) {
 	bc := newMinimalBlockchain(t)
 
-	if err := ApplyGenesis(bc, minimalGenesisState()); err != nil {
+	if err := applyMinimalGenesis(bc, minimalGenesisState()); err != nil {
 		t.Fatalf("ApplyGenesis: %v", err)
 	}
 
@@ -775,7 +796,7 @@ func TestValidateGenesisState_ValidatorZeroStake(t *testing.T) {
 
 func TestVerifyGenesisBlockHash_Match(t *testing.T) {
 	gs := minimalGenesisState()
-	expected := gs.BuildBlock().GetHash()
+	expected := cachedMinimalBlock().GetHash()
 
 	if err := VerifyGenesisBlockHash(gs, expected); err != nil {
 		t.Errorf("VerifyGenesisBlockHash: unexpected error: %v", err)
@@ -836,7 +857,7 @@ func TestBuildAllocationRoot_ChangeSensitive(t *testing.T) {
 func TestBuildAllocationRoot_MatchesTxsRoot(t *testing.T) {
 	gs := minimalGenesisState()
 	root := gs.buildAllocationRoot()
-	block := gs.BuildBlock()
+	block := cachedMinimalBlock()
 
 	if hex.EncodeToString(root) != hex.EncodeToString(block.Header.TxsRoot) {
 		t.Errorf("buildAllocationRoot != block.Header.TxsRoot\n  root : %x\n  txs  : %x",
