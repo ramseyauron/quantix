@@ -141,8 +141,15 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 				pubKey = stateDB.GetPublicKey(tx.Sender)
 			}
 			if len(pubKey) == 0 {
-				return fmt.Errorf("tx[%d] %s: SEC-E03: sender public key not available for signature verification", i, tx.ID)
-			}
+				// On devnet chains, missing pubkey means the tx came from an external test tool
+				// without a full SPHINCS+ keypair. Skip sig verification on devnet to allow
+				// devnet testing without full key infrastructure.
+				if bc.chainParams != nil && bc.chainParams.IsDevnet() {
+					logger.Debug("SEC-E03 devnet: skipping sig verification for tx %s — no pubkey registered", tx.ID)
+				} else {
+					return fmt.Errorf("tx[%d] %s: SEC-E03: sender public key not available for signature verification", i, tx.ID)
+				}
+			} else {
 			// Build canonical message: SHA-256("sender:receiver:amount:nonce")
 			canonicalPreimage := tx.Sender + ":" + tx.Receiver + ":" + tx.Amount.String() + ":" + fmt.Sprintf("%d", tx.Nonce)
 			canonicalMsg := sha256Bytes([]byte(canonicalPreimage))
@@ -153,24 +160,26 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 			if len(tx.SenderPublicKey) > 0 {
 				stateDB.RegisterPublicKey(tx.Sender, tx.SenderPublicKey)
 			}
+		} // end else (pubKey available)
 		}
 
 		expected := stateDB.GetNonce(tx.Sender)
 		if tx.Nonce != expected {
 			// SEC-C01: In dev-mode or peer-sync, gracefully skip nonce enforcement.
-			// In dev-mode: test transactions with non-sequential nonces don't abort the block.
-			// In peer-sync: the block was validated by PBFT quorum — trust the consensus,
-			// accept the nonce as-is and advance the nonce to tx.Nonce+1 so subsequent txs work.
-			if bc.devMode || isPeerSync {
-				if bc.devMode {
-					logger.Warn("executor: dev-mode: dropping tx[%d] %s: bad nonce: got %d want %d",
+			// In dev-mode or devnet: test transactions with non-sequential nonces don't abort the block.
+			// In peer-sync: the block was validated by PBFT quorum — trust the consensus.
+			isDevnet := bc.chainParams != nil && bc.chainParams.IsDevnet()
+			if bc.devMode || isDevnet || isPeerSync {
+				if bc.devMode || isDevnet {
+					logger.Warn("executor: devnet: accepting tx[%d] %s with nonce=%d (local expected=%d), advancing nonce",
 						i, tx.ID, tx.Nonce, expected)
-					continue
+					stateDB.SetNonce(tx.Sender, tx.Nonce) // accept and advance
+				} else {
+					// peer-sync: accept the tx, set nonce to match so state stays consistent
+					logger.Warn("executor: peer-sync: accepting tx[%d] %s with nonce=%d (local expected=%d)",
+						i, tx.ID, tx.Nonce, expected)
+					stateDB.SetNonce(tx.Sender, tx.Nonce)
 				}
-				// peer-sync: accept the tx, set nonce to match so state stays consistent
-				logger.Warn("executor: peer-sync: accepting tx[%d] %s with nonce=%d (local expected=%d)",
-					i, tx.ID, tx.Nonce, expected)
-				stateDB.SetNonce(tx.Sender, tx.Nonce)
 			} else {
 				return fmt.Errorf("tx[%d] %s: bad nonce: got %d want %d", i, tx.ID, tx.Nonce, expected)
 			}
@@ -181,14 +190,14 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 
 		bal := stateDB.GetBalance(tx.Sender)
 		if bal.Cmp(totalCost) < 0 {
-			if bc.devMode {
-				// Dev-mode: skip balance check, allow unfunded test addresses.
-				logger.Warn("executor: dev-mode: skipping balance check for tx[%d] %s (bal=%s needs=%s)",
+			if bc.devMode || (bc.chainParams != nil && bc.chainParams.IsDevnet()) {
+				// Dev-mode or devnet: skip balance check, allow unfunded test addresses.
+				logger.Warn("executor: devnet/dev-mode: skipping balance check for tx[%d] %s (bal=%s needs=%s)",
 					i, tx.ID, bal.String(), totalCost.String())
 				stateDB.AddBalance(tx.Receiver, tx.Amount)
 				bc.distributeGasFee(gasFee, proposerID, block.Body.Attestations, stateDB)
 				stateDB.IncrementNonce(tx.Sender)
-				logger.Info("executor: tx[%d] %s → %s %s nQTX (gas %s nQTX) ✓ [dev-mode]",
+				logger.Info("executor: tx[%d] %s → %s %s nQTX (gas %s nQTX) ✓ [devnet]",
 					i, tx.Sender, tx.Receiver, tx.Amount.String(), gasFee.String())
 				continue
 			}

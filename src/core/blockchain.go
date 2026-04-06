@@ -805,6 +805,8 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 	var proposingAtHeight uint64
 	// View at which proposal was started (used to detect view change and reset)
 	var proposingAtView uint64
+	// cancelProposal cancels the current proposal goroutine on view change
+	var cancelProposal context.CancelFunc
 
 	// Start goroutine for leader loop
 	go func() {
@@ -844,10 +846,18 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 					currentView := bc.consensusEngine.GetCurrentView()
 					if currentChainHeight > proposingAtHeight {
 						logger.Info("Leader: block at height %d committed externally — resetting isProposing", proposingAtHeight)
+						if cancelProposal != nil {
+							cancelProposal()
+							cancelProposal = nil
+						}
 						isProposing = false
 					} else if currentView != proposingAtView {
-						// View changed — a new leader may have taken over; reset so we can re-propose if elected
-						logger.Info("Leader: view changed from %d to %d — resetting isProposing", proposingAtView, currentView)
+						// View changed — cancel the old goroutine and reset so new leader can propose
+						logger.Info("Leader: view changed from %d to %d — cancelling previous proposal and resetting isProposing", proposingAtView, currentView)
+						if cancelProposal != nil {
+							cancelProposal()
+							cancelProposal = nil
+						}
 						isProposing = false
 					} else {
 						leaderMutex.Unlock()
@@ -858,6 +868,8 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 				isProposing = true // Mark as proposing
 				proposingAtHeight = bc.GetBlockCount()
 				proposingAtView = bc.consensusEngine.GetCurrentView()
+				var proposalCtx context.Context
+				proposalCtx, cancelProposal = context.WithCancel(ctx)
 				leaderMutex.Unlock()
 
 				// Log proposal start
@@ -923,11 +935,18 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 				}
 
 				// Reset proposing flag after a delay to allow consensus to complete
-				// Launch goroutine to wait and reset
-				go func(proposedAtHeight uint64, proposedAtView uint64) {
+				// Launch goroutine to wait and reset; respects proposalCtx cancellation.
+				go func(pCtx context.Context, proposedAtHeight uint64, proposedAtView uint64) {
 					// Poll for chain advancement (block committed) or timeout
 					deadline := time.Now().Add(20 * time.Second)
 					for time.Now().Before(deadline) {
+						select {
+						case <-pCtx.Done():
+							// Cancelled by view change or external reset — do NOT touch isProposing
+							// (the cancelling code already reset it under the mutex).
+							return
+						default:
+						}
 						time.Sleep(1 * time.Second)
 						if bc.GetBlockCount() > proposedAtHeight {
 							break // block committed, reset immediately
@@ -936,10 +955,16 @@ func (bc *Blockchain) StartLeaderLoop(ctx context.Context) {
 							break // view changed, reset immediately
 						}
 					}
+					// Check once more if already cancelled before touching the flag
+					select {
+					case <-pCtx.Done():
+						return
+					default:
+					}
 					leaderMutex.Lock()
 					isProposing = false // Reset proposing flag
 					leaderMutex.Unlock()
-				}(proposingAtHeight, proposingAtView)
+				}(proposalCtx, proposingAtHeight, proposingAtView)
 			}
 		}
 	}()

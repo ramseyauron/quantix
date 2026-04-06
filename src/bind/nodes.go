@@ -148,6 +148,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		SeedNodes:    nodeConfig.SeedNodes,
 		SeedHTTPPort: nodeConfig.SeedHTTPPort,
 		DevMode:      nodeConfig.DevMode, // FIX-P2P-03
+		ExplicitSeeds: nodeConfig.ExplicitSeeds,
 	}
 
 	var wg sync.WaitGroup
@@ -278,8 +279,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		}
 	}
 
-	// P2-SYNC: if seeds are provided, build HTTP base URLs and sync from peers before live operation.
-	if len(nodeConfig.SeedNodes) > 0 {
+	// P2-SYNC: if explicit seeds are provided, build HTTP base URLs and sync from peers before live operation.
+	if nodeConfig.ExplicitSeeds && len(nodeConfig.SeedNodes) > 0 {
 		seedHTTPPort := nodeConfig.SeedHTTPPort
 		if seedHTTPPort == "" {
 			seedHTTPPort = "8590"
@@ -333,9 +334,9 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	// Fix 2: dev-mode peer validator auto-registration.
 	// minerStopCh signals the devnet miner to stop when PBFT quorum is reached.
 	minerStopCh := make(chan struct{})
-	// If seeds are provided, register this node with each seed and poll until
+	// If explicit seeds are provided, register this node with each seed and poll until
 	// 4 validators are present, then the consensus engine will switch to PBFT.
-	if len(nodeConfig.SeedNodes) > 0 {
+	if nodeConfig.ExplicitSeeds && len(nodeConfig.SeedNodes) > 0 {
 		localNode := resources[0].P2PServer.LocalNode()
 		myPubKey := hex.EncodeToString(localNode.PublicKey)
 		myAddr := nodeConfig.TCPAddr
@@ -481,9 +482,9 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		}()
 	}
 
-	// P2-PBFT: For seed node (no seeds provided) in dev-mode, also poll for 4 validators
+	// P2-PBFT: For seed node (no explicitly-provided seeds) in dev-mode, also poll for 4 validators
 	// and sync them to the consensus validatorSet when quorum is reached.
-	if len(nodeConfig.SeedNodes) == 0 && pbftConsensus != nil {
+	if !nodeConfig.ExplicitSeeds && pbftConsensus != nil {
 		go func() {
 			// Seed node: register self in the blockchain DB so peers' poll can see it.
 			time.Sleep(6 * time.Second)
@@ -537,14 +538,23 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					resources[0].Blockchain.StartLeaderLoop(context.Background())
 					log.Printf("🏁 P2-PBFT: leader loop started for seed node")
 				}
-				close(minerStopCh)
-				log.Printf("🔨→⚖️ Devnet miner stopped, PBFT consensus engine running (seed node)")
+				// NOTE: devnet miner keeps running as fallback — PBFT commits blocks when it can,
+				// miner fills in when PBFT stalls. close(minerStopCh) intentionally omitted.
+				log.Printf("⚖️ P2-PBFT: consensus engine active — devnet miner continues as fallback on seed node")
 				return
 			}
 		}()
 	}
 
-	// Devnet solo block producer — mines a new block every 10s from mempool
+	// Devnet solo block producer — mines a new block every 10s from mempool.
+	// Only run on the seed node (no explicitly-provided peer seeds). Peer nodes sync
+	// from the seed and participate in PBFT without solo-mining, preventing chain divergence.
+	if nodeConfig.ExplicitSeeds {
+		log.Printf("⏭️  Devnet miner skipped for peer node %s — will sync from seed and use PBFT", nodeConfig.Name)
+		// Still need to drain minerStopCh to prevent goroutine leak if it's closed later
+		go func() { <-minerStopCh }()
+		goto skipDevnetMiner
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -598,6 +608,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			}
 		}
 	}()
+skipDevnetMiner:
 
 	// Start peer discovery after setup
 	go func() {
@@ -731,6 +742,7 @@ func RunMultipleNodesInternal() error {
 			SeedNodes:    config.SeedNodes,
 			SeedHTTPPort: config.SeedHTTPPort,
 			DevMode:      config.DevMode, // FIX-P2P-03
+			ExplicitSeeds: config.ExplicitSeeds,
 		}
 	}
 

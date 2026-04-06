@@ -295,6 +295,7 @@ func GetNodePortConfigs(numNodes int, roles []NodeRole, overrides map[string]str
 
 		// Seed nodes configuration (for peer discovery)
 		seedNodes := []string{}
+		explicitSeeds := false
 		if seeds, ok := overrides["seeds"]; ok {
 			// Split comma-separated seed list
 			seedNodes = strings.Split(seeds, ",")
@@ -309,6 +310,7 @@ func GetNodePortConfigs(numNodes int, roles []NodeRole, overrides map[string]str
 				}
 			}
 			seedNodes = validSeeds // Use only valid seeds
+			explicitSeeds = len(validSeeds) > 0
 		} else {
 			// Generate default seeds (all other nodes in the network)
 			for j := 0; j < numNodes; j++ {
@@ -340,6 +342,7 @@ func GetNodePortConfigs(numNodes int, roles []NodeRole, overrides map[string]str
 			SeedNodes:    seedNodes,  // Seed nodes for discovery
 			DevMode:      overrides["devMode"] == "true", // FIX-P2P-03
 			SeedHTTPPort: overrides["seedHTTPPort"],
+			ExplicitSeeds: explicitSeeds,
 		}
 	}
 
