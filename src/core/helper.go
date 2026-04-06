@@ -206,11 +206,20 @@ func (bc *Blockchain) AddBlockFromPeer(block *types.Block) error {
 	// SEC-P2P02: Validate block structure (hash integrity, parent chain, MerkleRoot)
 	// before trusting it. This ensures fabricated/corrupted peer blocks are rejected
 	// before peerSyncInProgress bypasses SEC-E03 tx signature verification.
-	// Note: PBFT attestation signature verification is not yet implemented (SEC-P2P03);
-	// until then, block hash + chain integrity is the structural trust anchor.
 	helper := NewBlockHelper(block)
 	if err := bc.ValidateBlock(helper); err != nil {
 		return fmt.Errorf("AddBlockFromPeer: block validation failed: %w", err)
+	}
+
+	// SEC-P2P03: Verify attestation signatures on incoming peer blocks.
+	// If the consensus engine has signing capability and pubkeys in its registry,
+	// verify each attestation. Unknown validators are warned but not rejected
+	// (bootstrap compat). Known validators with invalid sigs are hard-rejected
+	// in production mode, warned in dev-mode.
+	if bc.consensusEngine != nil {
+		if err := bc.consensusEngine.VerifyBlockAttestations(block, bc.devMode); err != nil {
+			return fmt.Errorf("AddBlockFromPeer: attestation verification failed: %w", err)
+		}
 	}
 
 	// Mark peer-sync in progress so applyTransactions skips SEC-E03.

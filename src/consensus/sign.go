@@ -428,3 +428,85 @@ func (s *SigningService) DeserializeAndRegisterPublicKey(nodeID string, publicKe
 	s.RegisterPublicKey(nodeID, pk)
 	return nil
 }
+
+// RegisterPubKeyHex deserializes a hex-encoded public key and registers it.
+// This is used by the blockchain layer to register known validator pubkeys.
+func (s *SigningService) RegisterPubKeyHex(nodeID string, pubkeyHex string) error {
+	pkBytes, err := hex.DecodeString(pubkeyHex)
+	if err != nil {
+		return fmt.Errorf("RegisterPubKeyHex: invalid hex for %s: %w", nodeID, err)
+	}
+	return s.DeserializeAndRegisterPublicKey(nodeID, pkBytes)
+}
+
+// VerifyAttestation verifies the SPHINCS+ signature on a block attestation.
+// Attestations are signed with the same format as votes: "VOTE:view:blockHash:voterID".
+// Returns (true, nil) on success, (false, nil) if pubkey not found (bootstrap compat),
+// or (false, err) on hard failure.
+func (s *SigningService) VerifyAttestation(att *types.Attestation) (bool, error) {
+	if len(att.Signature) == 0 {
+		return false, fmt.Errorf("VerifyAttestation: empty signature for validator %s", att.ValidatorID)
+	}
+
+	// Reconstruct the vote to reuse VerifyVote.
+	vote := &Vote{
+		BlockHash: att.BlockHash,
+		View:      att.View,
+		VoterID:   att.ValidatorID,
+		Signature: att.Signature,
+	}
+	return s.VerifyVote(vote)
+}
+
+// HasPublicKey returns true if a public key is registered for nodeID.
+func (s *SigningService) HasPublicKey(nodeID string) bool {
+	s.registryMutex.RLock()
+	defer s.registryMutex.RUnlock()
+	_, ok := s.publicKeyRegistry[nodeID]
+	return ok
+}
+
+// VerifyBlockAttestations verifies all attestation signatures in a block.
+// - If pubkey not found for a validator → log warning, skip (bootstrap compat).
+// - If pubkey found but sig invalid → return error (hard reject).
+// devMode=true: warn on invalid but don't reject (for testnet compatibility).
+func (c *Consensus) VerifyBlockAttestations(block *types.Block, devMode bool) error {
+	if block == nil || block.Body.Attestations == nil {
+		return nil
+	}
+	if c.signingService == nil {
+		return nil
+	}
+
+	for _, att := range block.Body.Attestations {
+		if att == nil || att.ValidatorID == "" {
+			continue
+		}
+		// Skip if no signature — only reject if we have a pubkey and sig is present
+		if len(att.Signature) == 0 {
+			if c.signingService.HasPublicKey(att.ValidatorID) && !devMode {
+				return fmt.Errorf("VerifyBlockAttestations: empty signature from known validator %s", att.ValidatorID)
+			}
+			logger.Warn("⚠️ SEC-P2P03: attestation from %s has empty signature (no pubkey or dev-mode)", att.ValidatorID)
+			continue
+		}
+		// Check if we have the pubkey
+		if !c.signingService.HasPublicKey(att.ValidatorID) {
+			logger.Warn("⚠️ SEC-P2P03: no pubkey for validator %s — skipping attestation verification (bootstrap)", att.ValidatorID)
+			continue
+		}
+		valid, err := c.signingService.VerifyAttestation(att)
+		if err != nil || !valid {
+			msg := fmt.Sprintf("SEC-P2P03: invalid attestation signature from validator %s on block %s", att.ValidatorID, att.BlockHash)
+			if devMode {
+				logger.Warn("⚠️ %s (dev-mode: not rejecting)", msg)
+			} else {
+				logger.Error("❌ %s", msg)
+				return fmt.Errorf("%s", msg)
+			}
+		} else {
+			logger.Info("✅ SEC-P2P03: verified attestation from %s on block %s", att.ValidatorID, att.BlockHash)
+		}
+	}
+	return nil
+}
