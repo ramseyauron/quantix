@@ -197,6 +197,11 @@ func (bc *Blockchain) AddBlockFromPeer(block *types.Block) error {
 	if block == nil {
 		return fmt.Errorf("AddBlockFromPeer: nil block")
 	}
+	// Serialize to prevent double-commit race: two goroutines receiving the same
+	// height block before either commits would both pass the height check below.
+	bc.addFromPeerMu.Lock()
+	defer bc.addFromPeerMu.Unlock()
+
 	// Check height – skip if we already have this block.
 	latest := bc.GetLatestBlock()
 	if latest != nil && block.GetHeight() <= latest.GetHeight() {

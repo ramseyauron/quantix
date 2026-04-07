@@ -279,18 +279,10 @@ func (c *Consensus) UpdateLeaderStatus() {
 	c.updateLeaderStatus() // Call private implementation
 }
 
-// updateLeaderStatus is the private implementation.
-func (c *Consensus) updateLeaderStatus() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Fall back to round-robin if stake-weighted selection is disabled
-	if !c.useStakeWeighted {
-		c.updateLeaderStatusRoundRobin()
-		return
-	}
-
-	// Get current slot and epoch from time converter
+// updateLeaderStatusLocked is the lock-free RANDAO leader election core.
+// Caller MUST hold c.mu.
+func (c *Consensus) updateLeaderStatusLocked() {
+	// Always use RANDAO slot-based election — round-robin removed to prevent split votes.
 	currentSlot := c.timeConverter.CurrentSlot()
 	currentEpoch := currentSlot / SlotsPerEpoch
 
@@ -305,19 +297,30 @@ func (c *Consensus) updateLeaderStatus() {
 
 	// Handle case where no validator was selected
 	if selected == nil {
-		c.isLeader = false
-		c.electedLeaderID = ""
-		c.electedSlot = 0
-		logger.Warn("No validator selected for slot %d", currentSlot)
+		validators := c.getValidators()
+		if len(validators) == 0 {
+			// No validators yet — wait, don't elect anyone
+			c.isLeader = false
+			c.electedLeaderID = ""
+			c.electedSlot = 0
+			logger.Warn("No validator selected for slot %d (validator set empty — waiting)", currentSlot)
+			return
+		}
+		// RANDAO returned nil but we have validators: fall back to index 0 (alphabetical)
+		sort.Strings(validators)
+		fallback := validators[0]
+		c.electedLeaderID = fallback
+		c.electedSlot = currentSlot
+		c.isLeader = (fallback == c.nodeID)
+		logger.Warn("RANDAO returned nil for slot %d, falling back to first validator %s", currentSlot, fallback)
 		return
 	}
 
 	// Store the elected leader information
 	c.electedLeaderID = selected.ID
-	c.electedSlot = currentSlot // Store the slot used for election
+	c.electedSlot = currentSlot
 	c.isLeader = (selected.ID == c.nodeID)
 
-	// Log selection status with appropriate formatting
 	if c.isLeader {
 		logger.Info("✅ Node %s selected as proposer for slot %d with stake %.2f QTX",
 			c.nodeID, currentSlot, selected.GetStakeInQTX())
@@ -325,6 +328,13 @@ func (c *Consensus) updateLeaderStatus() {
 		logger.Info("   Node %s NOT selected for slot %d (selected: %s with %.2f QTX)",
 			c.nodeID, currentSlot, selected.ID, selected.GetStakeInQTX())
 	}
+}
+
+// updateLeaderStatus is the private implementation.
+func (c *Consensus) updateLeaderStatus() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updateLeaderStatusLocked()
 }
 
 // GetElectedLeaderID returns the RANDAO-elected leader from the last UpdateLeaderStatus call.
@@ -703,23 +713,8 @@ func (c *Consensus) onEpochTransition(newEpoch uint64) {
 	c.currentEpoch = newEpoch // Update current epoch
 }
 
-// updateLeaderStatusRoundRobin elects a leader using round-robin selection
-func (c *Consensus) updateLeaderStatusRoundRobin() {
-	// Get list of validators
-	validators := c.getValidators()
-	if len(validators) == 0 {
-		c.isLeader = false
-		c.electedLeaderID = ""
-		return
-	}
-	// Sort for deterministic ordering
-	sort.Strings(validators)
-	// Select leader based on current view
-	leaderIndex := int(c.currentView) % len(validators)
-	expectedLeader := validators[leaderIndex]
-	c.electedLeaderID = expectedLeader
-	c.isLeader = (expectedLeader == c.nodeID)
-}
+// updateLeaderStatusRoundRobin has been removed.
+// Round-robin caused split-leader conflicts with RANDAO; RANDAO is authoritative.
 
 // processProposal validates and processes an incoming block proposal.
 // Leader validation uses electedLeaderID set by UpdateLeaderStatus, so
@@ -747,10 +742,10 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		return
 	}
 
-	// Check for duplicate proposal
-	if c.preparedBlock != nil && c.preparedBlock.GetHash() == proposal.Block.GetHash() {
-		logger.Warn("❌ Already have prepared block for height %d, ignoring duplicate proposal",
-			proposal.Block.GetHeight())
+	// Check for duplicate proposal (same block hash AND same view — re-proposals in new views are OK)
+	if c.preparedBlock != nil && c.preparedBlock.GetHash() == proposal.Block.GetHash() && proposal.View <= c.preparedView {
+		logger.Warn("❌ Already have prepared block for height %d at view %d, ignoring duplicate proposal",
+			proposal.Block.GetHeight(), c.preparedView)
 		return
 	}
 
@@ -827,7 +822,7 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		c.currentView = proposal.View
 		c.resetConsensusState()
 		// Re-run so electedLeaderID is refreshed for the new view
-		c.updateLeaderStatus()
+		c.updateLeaderStatusLocked()
 	}
 
 	// Verify block height matches expected next height
@@ -865,8 +860,8 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		logger.Warn("⚠️ Proposal has no SlotNumber, using embedded ElectedLeaderID=%s", proposal.ElectedLeaderID)
 		c.electedLeaderID = proposal.ElectedLeaderID
 	} else {
-		// Last resort: re-run with current slot (original behaviour, may still race)
-		c.updateLeaderStatus()
+		// Last resort: re-run with current slot (RANDAO, already holding lock)
+		c.updateLeaderStatusLocked()
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 
@@ -1733,33 +1728,11 @@ func (c *Consensus) tryViewChangeLock() bool {
 	}
 }
 
-// updateLeaderStatusWithValidators is used by view-change to elect leader by round-robin.
-// It also stores the result in electedLeaderID so isValidLeader stays consistent.
-func (c *Consensus) updateLeaderStatusWithValidators(validators []string) {
-	if len(validators) == 0 {
-		c.isLeader = false
-		c.electedLeaderID = ""
-		return
-	}
-
-	// Sort for deterministic selection
-	sort.Strings(validators)
-	// Select leader based on current view
-	leaderIndex := int(c.currentView) % len(validators)
-	expectedLeader := validators[leaderIndex]
-
-	// Store elected leader
-	c.electedLeaderID = expectedLeader
-	c.isLeader = (expectedLeader == c.nodeID)
-
-	// Log election result
-	if c.isLeader {
-		logger.Info("✅ Node %s elected as leader for view %d (index %d/%d)",
-			c.nodeID, c.currentView, leaderIndex, len(validators))
-	} else {
-		logger.Debug("Node %s is NOT leader for view %d (leader: %s)",
-			c.nodeID, c.currentView, expectedLeader)
-	}
+// updateLeaderStatusWithValidators previously used view % len round-robin which conflicted
+// with RANDAO. Now delegates to RANDAO-only updateLeaderStatusLocked.
+// Caller MUST hold c.mu.
+func (c *Consensus) updateLeaderStatusWithValidators(_ []string) {
+	c.updateLeaderStatusLocked()
 }
 
 // resetConsensusState clears all consensus-related state for a new view
@@ -1780,7 +1753,7 @@ func (c *Consensus) resetConsensusState() {
 //
 // It uses c.electedLeaderID which is populated by:
 //   - UpdateLeaderStatus (RANDAO path, called from helper.go before proposal)
-//   - updateLeaderStatusWithValidators (round-robin, called on view change)
+//   - updateLeaderStatusWithValidators (now delegates to RANDAO, called on view change)
 //
 // Both paths store a single consistent leader ID, so every node (leader and
 // followers) agrees on who is allowed to propose.
