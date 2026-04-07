@@ -1539,6 +1539,10 @@ func (c *Consensus) getTotalNodes() int {
 	}
 
 	// Fallback: count from P2P peer list
+	// SEC-NIL01: guard nil nodeManager
+	if c.nodeManager == nil {
+		return 0
+	}
 	peers := c.nodeManager.GetPeers()
 	validatorCount := 0
 	// Count validator peers
@@ -1791,6 +1795,10 @@ func (c *Consensus) isValidLeader(nodeID string, view uint64) bool {
 
 // getValidators returns a list of all active validator node IDs
 func (c *Consensus) getValidators() []string {
+	// SEC-NIL01: guard against nil nodeManager (e.g. in unit tests or early init).
+	if c.nodeManager == nil {
+		return nil
+	}
 	peers := c.nodeManager.GetPeers()
 	validatorSet := make(map[string]bool)
 	validators := []string{}
