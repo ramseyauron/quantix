@@ -35,6 +35,7 @@ import (
 	nethttp "net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -460,29 +461,42 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					if cons != nil {
 						vs := cons.GetValidatorSet()
 						if vs != nil {
-							for _, vr := range lastValidators {
-								nodeAddr := vr.NodeID
-								if nodeAddr == "" {
-									nodeAddr = vr.NodeAddress
+							// Sort deterministically so all peer nodes register validators in the same order.
+								// Consistent ordering ensures RANDAO leader election is deterministic.
+								sort.Slice(lastValidators, func(i, j int) bool {
+									return lastValidators[i].NodeID < lastValidators[j].NodeID
+								})
+								registered := 0
+								for _, vr := range lastValidators {
+									nodeAddr := vr.NodeID
+									if nodeAddr == "" {
+										nodeAddr = vr.NodeAddress
+									}
+									// Skip ghost/unknown validators — they have no real node and
+									// would cause RANDAO to elect an absent leader → endless view-changes.
+									if nodeAddr == "" || nodeAddr == "unknown" || nodeAddr == "Node-unknown" || strings.Contains(nodeAddr, "unknown") {
+										log.Printf("⚠️  P2-PBFT: skipping unknown validator %q — no real node", nodeAddr)
+										continue
+									}
+									// Use node address as validator ID (matches how nodes identify)
+									stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
+									if !ok || stake.Sign() <= 0 {
+										stake = new(big.Int).SetInt64(1000000)
+									}
+									// Convert to QTX units for the validator set
+									stakeQTX := new(big.Int).Div(stake, big.NewInt(1e9)) // rough conversion
+									if stakeQTX.Sign() <= 0 {
+										stakeQTX = big.NewInt(1000)
+									}
+									consNodeID := nodeAddr
+									if !strings.HasPrefix(consNodeID, "Node-") {
+										consNodeID = "Node-" + consNodeID
+									}
+									_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
+									log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", consNodeID, stake.String())
+									registered++
 								}
-								// Use node address as validator ID (matches how nodes identify)
-								stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
-								if !ok || stake.Sign() <= 0 {
-									stake = new(big.Int).SetInt64(1000000)
-								}
-								// Convert to QTX units for the validator set
-								stakeQTX := new(big.Int).Div(stake, big.NewInt(1e9)) // rough conversion
-								if stakeQTX.Sign() <= 0 {
-									stakeQTX = big.NewInt(1000)
-								}
-								consNodeID := nodeAddr
-								if !strings.HasPrefix(consNodeID, "Node-") {
-									consNodeID = "Node-" + consNodeID
-								}
-								_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
-								log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", consNodeID, stake.String())
-							}
-							log.Printf("✅ P2-PBFT: consensus validatorSet now has %d validators — PBFT active!", n)
+								log.Printf("✅ P2-PBFT: consensus validatorSet now has %d real validators — PBFT active!", registered)
 						}
 					}
 					// Start the consensus engine now that quorum is reachable.
@@ -532,7 +546,15 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 				pbftReady = true
 				log.Printf("🎉 Seed node: 4 validators — syncing consensus validatorSet")
 				if vs := cons.GetValidatorSet(); vs != nil {
+					// Sort deterministically so seed node uses same order as peer nodes.
+					sort.Slice(validators, func(i, j int) bool {
+						return validators[i].NodeAddress < validators[j].NodeAddress
+					})
+					registered := 0
 					for _, vr := range validators {
+						if vr.NodeAddress == "" || strings.Contains(vr.NodeAddress, "unknown") {
+							continue
+						}
 						stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
 						if !ok || stake.Sign() <= 0 {
 							stake = new(big.Int).SetInt64(1000000)
@@ -546,8 +568,9 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 							consNodeID = "Node-" + consNodeID
 						}
 						_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
+						registered++
 					}
-					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d validators", len(validators))
+					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d real validators", registered)
 				}
 				// Start the consensus engine now that quorum is reachable.
 				if err := cons.Start(); err != nil {
