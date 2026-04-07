@@ -991,7 +991,7 @@ func (c *Consensus) processPrepareVote(vote *Vote) {
 		signatureHex := hex.EncodeToString(vote.Signature)
 		consensusSig := &ConsensusSignature{
 			BlockHash:    vote.BlockHash,
-			BlockHeight:  c.currentHeight,
+			BlockHeight:  c.preparedBlock.GetHeight(), // use the actual block height, not currentHeight
 			SignerNodeID: vote.VoterID,
 			Signature:    signatureHex,
 			MessageType:  "prepare",
@@ -1181,6 +1181,26 @@ func (c *Consensus) ForcePopulateAllSignatures() {
 	logger.Info("✅ Force population completed for %d signatures", len(c.consensusSignatures))
 }
 
+// PruneStaleProposalSignatures removes consensus signatures for the given height
+// that refer to a hash OTHER than the one that was actually committed.  These
+// are artefacts of failed/superseded proposals (e.g. view-change losers) and
+// would otherwise cause permanent "block_not_found" noise in SMR logs.
+func (c *Consensus) PruneStaleProposalSignatures(committedHeight uint64, committedHash string) {
+	c.signatureMutex.Lock()
+	defer c.signatureMutex.Unlock()
+
+	kept := c.consensusSignatures[:0]
+	for _, sig := range c.consensusSignatures {
+		if sig.BlockHeight == committedHeight && sig.BlockHash != committedHash {
+			logger.Info("🧹 Pruning stale proposal sig: height=%d hash=%s (committed=%s)",
+				sig.BlockHeight, sig.BlockHash[:8], committedHash[:8])
+			continue
+		}
+		kept = append(kept, sig)
+	}
+	c.consensusSignatures = kept
+}
+
 // GetConsensusSignatures returns a copy of all consensus signatures
 func (c *Consensus) GetConsensusSignatures() []*ConsensusSignature {
 	c.signatureMutex.RLock()
@@ -1270,7 +1290,7 @@ func (c *Consensus) processVote(vote *Vote) {
 		signatureHex := hex.EncodeToString(vote.Signature)
 		consensusSig := &ConsensusSignature{
 			BlockHash:    vote.BlockHash,
-			BlockHeight:  c.currentHeight,
+			BlockHeight:  blockToCommit.GetHeight(), // use actual block height, not currentHeight
 			SignerNodeID: vote.VoterID,
 			Signature:    signatureHex,
 			MessageType:  "commit",
@@ -1635,6 +1655,13 @@ func (c *Consensus) commitBlock(block Block) {
 		c.lastPreparedHeight = 0
 	}
 	c.resetConsensusState()
+
+	// Prune stale proposal signatures for this height (losing proposals from
+	// view changes) so SMR no longer emits block_not_found for them.
+	// block.GetHash() here is the consensus (pre-FinalizeHash) hash H1 — the
+	// same hash that was used in prepare/commit votes.  Other proposals at the
+	// same height (different hash) were never committed and should be removed.
+	c.PruneStaleProposalSignatures(block.GetHeight(), block.GetHash())
 
 	logger.Info("🎉 Node %s successfully committed block %s at height %d",
 		c.nodeID, block.GetHash(), c.currentHeight)

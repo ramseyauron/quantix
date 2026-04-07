@@ -1867,6 +1867,12 @@ func (bc *Blockchain) CommitBlock(block consensus.Block) error {
 		return fmt.Errorf("CommitBlock: execution failed: %w", err)
 	}
 
+	// Capture the consensus hash (the hash nodes voted on) BEFORE we stamp
+	// StateRoot and re-finalize.  After FinalizeHash the hash changes, which
+	// was the root cause of "block_not_found": SMR looked up the old hash and
+	// found nothing because only the new hash was in the index.
+	consensusHash := typeBlock.GetHash()
+
 	// Stamp the real state root into the block header before storage.
 	typeBlock.Header.StateRoot = stateRoot
 	// Re-finalize hash because StateRoot is an input to the block hash.
@@ -1875,6 +1881,14 @@ func (bc *Blockchain) CommitBlock(block consensus.Block) error {
 	// Store block in storage (now with the real StateRoot).
 	if err := bc.storage.StoreBlock(typeBlock); err != nil {
 		return fmt.Errorf("failed to store block: %w", err)
+	}
+
+	// CRITICAL FIX: if the hash changed after FinalizeHash, register the old
+	// (consensus) hash as an alias so lookups by the voted-on hash succeed.
+	newHash := typeBlock.GetHash()
+	if consensusHash != newHash {
+		bc.storage.AddHashAlias(consensusHash, typeBlock)
+		logger.Info("🔗 CommitBlock: aliased consensus hash %s → stored hash %s", consensusHash, newHash)
 	}
 
 	// Update in-memory chain

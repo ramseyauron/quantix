@@ -1273,6 +1273,17 @@ func (s *Storage) GetBlockByHash(hash string) (*types.Block, error) {
 	return block, nil
 }
 
+// AddHashAlias registers an additional hash that points to an already-stored block.
+// Used when a block's hash changes after consensus voting (e.g. after StateRoot is
+// stamped and FinalizeHash is called): the consensus hash (old) must remain resolvable.
+func (s *Storage) AddHashAlias(oldHash string, block *types.Block) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.blockIndex[oldHash]; !exists {
+		s.blockIndex[oldHash] = block
+	}
+}
+
 // GetLatestBlock returns the latest block in the chain
 func (s *Storage) GetLatestBlock() (*types.Block, error) {
 	s.mu.RLock()
