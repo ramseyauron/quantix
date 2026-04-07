@@ -116,6 +116,16 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 			var seedBlocks []*types.Block
 			if json.Unmarshal(body, &seedBlocks) == nil && len(seedBlocks) > 0 {
 				seedGenesis := seedBlocks[0]
+				// SEC-SYNC01: Verify genesis block content integrity before replacing.
+				// All height≥1 blocks pass SEC-P01 hash verification; genesis must too.
+				// A MITM or malicious peer could otherwise inject a crafted genesis with
+				// altered initial state or token distribution.
+				computedGenesisHash := string(seedGenesis.GenerateBlockHash())
+				if computedGenesisHash != seedGenesis.GetHash() {
+					logger.Warn("[SYNC] Genesis block hash mismatch from peer: claimed=%s computed=%s — rejecting poisoned genesis",
+						seedGenesis.GetHash(), computedGenesisHash)
+					// Skip genesis replacement but continue syncing height 1+ blocks.
+				} else {
 				localGenesis := bc.GetBlockByNumber(0)
 				if localGenesis == nil || localGenesis.GetHash() != seedGenesis.GetHash() {
 					log.Printf("[SYNC] Genesis mismatch — replacing local genesis (hash=%s) with seed genesis (hash=%s ts=%d)",
@@ -137,6 +147,7 @@ func (bc *Blockchain) syncFromPeer(peerBase string) error {
 						log.Printf("[SYNC] Genesis replaced: hash=%s ts=%d", seedGenesis.GetHash(), seedGenesis.GetTimestamp())
 					}
 				}
+				} // end SEC-SYNC01 hash-verified else
 			}
 		}
 	}
