@@ -199,9 +199,11 @@ func TestDefaultGenesisState_MainnetConstants(t *testing.T) {
 		t.Errorf("ChainID: want %d, got %d", wantChainID, gs.ChainID)
 	}
 
-	const wantTimestamp = int64(1732070400) // Nov 20 2024 00:00:00 UTC
-	if gs.Timestamp != wantTimestamp {
-		t.Errorf("Timestamp: want %d, got %d", wantTimestamp, gs.Timestamp)
+	// DefaultGenesisState now uses time.Now() for accurate genesis timestamps.
+	// Verify it is a recent positive Unix timestamp (after 2024-01-01).
+	const minTimestamp = int64(1704067200) // 2024-01-01 00:00:00 UTC
+	if gs.Timestamp < minTimestamp {
+		t.Errorf("Timestamp: want >= %d (2024-01-01), got %d", minTimestamp, gs.Timestamp)
 	}
 
 	wantDiff := big.NewInt(17179869184)

@@ -109,7 +109,11 @@ func TestValidatorGetList_IncludesRegistered(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if vm["node_address"] == "192.168.1.5:9000" {
+		// J.A.R.V.I.S. faf3fd7: /validators now returns node_id (prefixed "Node-<addr>")
+		// Match on node_address field OR node_id containing the registered address.
+		nodeID, _ := vm["node_id"].(string)
+		nodeAddr, _ := vm["node_address"].(string)
+		if nodeAddr == "192.168.1.5:9000" || nodeID == "Node-192.168.1.5:9000" || nodeID == "192.168.1.5:9000" {
 			found = true
 			break
 		}
