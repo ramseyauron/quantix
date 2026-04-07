@@ -262,6 +262,22 @@ func (bc *Blockchain) GetMempool() *pool.Mempool {
 	return bc.mempool
 }
 
+// GetPendingTransactions returns all pending transactions from the mempool.
+func (bc *Blockchain) GetPendingTransactions() []*types.Transaction {
+	if bc.mempool == nil {
+		return nil
+	}
+	return bc.mempool.GetPendingTransactions()
+}
+
+// GetMempoolStats returns mempool statistics.
+func (bc *Blockchain) GetMempoolStats() map[string]interface{} {
+	if bc.mempool == nil {
+		return nil
+	}
+	return bc.mempool.GetStats()
+}
+
 // GetChainParams returns the Quantix blockchain parameters for external recognition
 func (bc *Blockchain) GetChainParams() *QuantixChainParameters {
 	return bc.chainParams

@@ -233,6 +233,8 @@ func (s *Server) setupRoutes() {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "block mined", "height": height})
 	})
+	s.router.GET("/mempool", s.handleGetMempool)
+
 	s.router.GET("/latest-transaction", func(c *gin.Context) {
 		s.lastTxMutex.RLock()
 		defer s.lastTxMutex.RUnlock()
@@ -867,5 +869,62 @@ func (s *Server) handleFaucet(c *gin.Context) {
 		"tx_id":   tx.ID,
 		"address": req.Address,
 		"amount":  req.Amount,
+	})
+}
+
+// handleGetMempool returns the current pending transactions in the mempool.
+func (s *Server) handleGetMempool(c *gin.Context) {
+	txs := s.blockchain.GetPendingTransactions()
+	stats := s.blockchain.GetMempoolStats()
+
+	type TxItem struct {
+		ID        string `json:"id"`
+		Sender    string `json:"sender"`
+		Receiver  string `json:"receiver"`
+		Amount    string `json:"amount"`
+		GasLimit  string `json:"gas_limit"`
+		GasPrice  string `json:"gas_price"`
+		Nonce     uint64 `json:"nonce"`
+		Timestamp int64  `json:"timestamp"`
+		Fee       string `json:"fee"`
+	}
+
+	items := make([]TxItem, 0, len(txs))
+	for _, tx := range txs {
+		fee := "0"
+		if tx.GasLimit != nil && tx.GasPrice != nil {
+			f := new(big.Int).Mul(tx.GasLimit, tx.GasPrice)
+			fee = f.String()
+		}
+		amt := "0"
+		if tx.Amount != nil {
+			amt = tx.Amount.String()
+		}
+		gl := "0"
+		if tx.GasLimit != nil {
+			gl = tx.GasLimit.String()
+		}
+		gp := "0"
+		if tx.GasPrice != nil {
+			gp = tx.GasPrice.String()
+		}
+
+		items = append(items, TxItem{
+			ID:        tx.ID,
+			Sender:    tx.Sender,
+			Receiver:  tx.Receiver,
+			Amount:    amt,
+			GasLimit:  gl,
+			GasPrice:  gp,
+			Nonce:     tx.Nonce,
+			Timestamp: tx.Timestamp,
+			Fee:       fee,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"pending": items,
+		"count":   len(items),
+		"stats":   stats,
 	})
 }
