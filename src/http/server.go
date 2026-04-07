@@ -687,7 +687,17 @@ func (s *Server) Router() interface{ ServeHTTP(http.ResponseWriter, *http.Reques
 	return s.router
 }
 
-// handleGetValidators returns all registered validators.
+// ValidatorInfoResponse is the enriched validator record returned by GET /validators.
+type ValidatorInfoResponse struct {
+	Address        string `json:"address"`
+	NodeID         string `json:"node_id"`
+	Stake          int64  `json:"stake"`
+	Status         string `json:"status"`
+	BlocksProduced int64  `json:"blocks_produced"`
+	RewardAddress  string `json:"reward_address"`
+}
+
+// handleGetValidators returns all registered validators with enriched data.
 // GET /validators — P2-3
 func (s *Server) handleGetValidators(c *gin.Context) {
 	validators, err := s.blockchain.GetValidators()
@@ -698,9 +708,77 @@ func (s *Server) handleGetValidators(c *gin.Context) {
 	if validators == nil {
 		validators = []*core.ValidatorRegistration{}
 	}
+
+	// Scan recent blocks to count blocks produced per proposer.
+	proposerCount := map[string]int64{}
+	blockCount := s.blockchain.GetBlockCount()
+	scanStart := uint64(0)
+	if blockCount > 1000 {
+		scanStart = blockCount - 1000
+	}
+	for h := scanStart; h < blockCount; h++ {
+		blk := s.blockchain.GetBlockByNumber(h)
+		if blk == nil {
+			continue
+		}
+		pid := blk.Header.ProposerID
+		if pid != "" {
+			proposerCount[pid]++
+		}
+	}
+
+	// Build enriched response. public_key in ValidatorRegistration is the
+	// wallet/reward address; node_address is the P2P address.
+	result := make([]ValidatorInfoResponse, 0, len(validators))
+	activeCount := 0
+	seen := map[string]bool{}
+	for _, v := range validators {
+		addr := v.PublicKey // reward/wallet address
+		if seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		stakeInt, _ := new(big.Int).SetString(v.StakeAmount, 10)
+		stakeVal := int64(0)
+		if stakeInt != nil {
+			stakeVal = stakeInt.Int64()
+		}
+		status := "inactive"
+		if v.Active {
+			status = "active"
+			activeCount++
+		}
+		result = append(result, ValidatorInfoResponse{
+			Address:        addr,
+			NodeID:         "Node-" + v.NodeAddress,
+			Stake:          stakeVal,
+			Status:         status,
+			BlocksProduced: proposerCount[addr],
+			RewardAddress:  addr,
+		})
+	}
+
+	// Also include any proposers discovered in blocks that aren't in the registry.
+	for addr, cnt := range proposerCount {
+		if seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		result = append(result, ValidatorInfoResponse{
+			Address:        addr,
+			NodeID:         "unknown",
+			Stake:          0,
+			Status:         "active",
+			BlocksProduced: cnt,
+			RewardAddress:  addr,
+		})
+		activeCount++
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"validators": validators,
-		"count":      len(validators),
+		"validators": result,
+		"total":      len(result),
+		"active":     activeCount,
 	})
 }
 
