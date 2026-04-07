@@ -499,6 +499,29 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 								log.Printf("✅ P2-PBFT: consensus validatorSet now has %d real validators — PBFT active!", registered)
 						}
 					}
+					// Re-sync from seeds before starting PBFT to ensure we have the seed's
+					// solo-mined blocks (if any) so our chain base matches the seed's.
+					for _, seedURL := range seedHTTPs {
+						resp, err2 := nethttp.Get(seedURL + "/blockcount") //nolint:noctx
+						if err2 != nil {
+							continue
+						}
+						var cr struct {
+							Count uint64 `json:"count"`
+						}
+						_ = json.NewDecoder(resp.Body).Decode(&cr)
+						resp.Body.Close()
+						localH := resources[0].Blockchain.GetBlockCount()
+						if cr.Count > localH {
+							log.Printf("🔄 P2-PBFT pre-start sync: seed height=%d local=%d — catching up", cr.Count, localH)
+							if err2 = resources[0].Blockchain.SyncFromPeerHTTP(seedURL); err2 != nil {
+								log.Printf("⚠️  P2-PBFT pre-start sync failed: %v", err2)
+							} else {
+								log.Printf("✅ P2-PBFT pre-start sync complete: now at height %d", resources[0].Blockchain.GetBlockCount())
+							}
+						}
+						break
+					}
 					// Start the consensus engine now that quorum is reachable.
 					if err := cons.Start(); err != nil {
 						log.Printf("⚠️  P2-PBFT: consensus.Start failed at quorum: %v", err)
@@ -572,6 +595,12 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					}
 					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d real validators", registered)
 				}
+				// Stop devnet miner so PBFT is the sole block producer.
+				// Running both causes solo-mined blocks with no attestors, breaking reward distribution.
+				close(minerStopCh)
+				log.Printf("🔨→⚖️ Devnet miner stopped on seed node — PBFT is now the sole block producer")
+				// Give peer nodes a moment to re-sync our chain before we start proposing.
+				time.Sleep(8 * time.Second)
 				// Start the consensus engine now that quorum is reachable.
 				if err := cons.Start(); err != nil {
 					log.Printf("⚠️  P2-PBFT: seed node consensus.Start failed at quorum: %v", err)
@@ -580,10 +609,6 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					resources[0].Blockchain.StartLeaderLoop(context.Background())
 					log.Printf("🏁 P2-PBFT: leader loop started for seed node")
 				}
-				// Stop devnet miner so PBFT is the sole block producer.
-				// Running both causes solo-mined blocks with no attestors, breaking reward distribution.
-				close(minerStopCh)
-				log.Printf("🔨→⚖️ Devnet miner stopped on seed node — PBFT is now the sole block producer")
 				return
 			}
 		}()

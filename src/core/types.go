@@ -178,6 +178,9 @@ type Blockchain struct {
 	// Uses sync/atomic via a separate peerSyncMu to avoid deadlock with bc.lock.
 	peerSyncInProgress bool
 	peerSyncMu         sync.Mutex
+	// addFromPeerMu serializes AddBlockFromPeer to prevent double-commit race
+	// where two goroutines both pass the "height <= latest" check before either commits.
+	addFromPeerMu      sync.Mutex
 
 	// rewardAddress is the wallet address (64-char hex) that receives block
 	// rewards and gas fees for blocks mined by this node.  Set during
