@@ -165,6 +165,7 @@ func NewConsensus(
 		timeoutVotes:         make(map[uint64]map[string]*TimeoutMsg), // For view change quorum
 		viewChangeBackoff:    2 * time.Second,                          // P2-4: initial backoff
 		lastProposalTime:     common.GetTimeService().Now(),            // P2-5: partition detection
+		suspectedOfflineLeaders: make(map[string]bool),                 // PBFT liveness: skip offline leaders
 	}
 
 	// Initialize and validate VDF parameters (run once at startup)
@@ -292,8 +293,53 @@ func (c *Consensus) updateLeaderStatusLocked() {
 	}
 
 	// Get RANDAO seed for current slot and select proposer
+	// Mix in the current view number so that different views elect different leaders.
+	// All nodes that agree on the same view will derive the same seed (deterministic).
 	seed := c.randao.GetSeed(currentSlot)
+	// XOR the first 8 bytes with the view number for view-based leader rotation
+	viewBytes := [8]byte{
+		byte(c.currentView >> 56), byte(c.currentView >> 48),
+		byte(c.currentView >> 40), byte(c.currentView >> 32),
+		byte(c.currentView >> 24), byte(c.currentView >> 16),
+		byte(c.currentView >> 8), byte(c.currentView),
+	}
+	for i := 0; i < 8; i++ {
+		seed[i] ^= viewBytes[i]
+	}
 	selected := c.selector.SelectProposer(currentEpoch, seed)
+
+	// PBFT liveness: if selected leader is suspected offline, try next views
+	// to find an available leader rather than cycling through view changes indefinitely.
+	if selected != nil && c.suspectedOfflineLeaders[selected.ID] {
+		logger.Warn("⚠️ PBFT liveness: elected leader %s is suspected offline, trying alternate view offsets", selected.ID)
+		foundAlternate := false
+		for offset := uint64(1); offset <= 10; offset++ {
+			altSeed := c.randao.GetSeed(currentSlot)
+			altView := c.currentView + offset
+			altViewBytes := [8]byte{
+				byte(altView >> 56), byte(altView >> 48),
+				byte(altView >> 40), byte(altView >> 32),
+				byte(altView >> 24), byte(altView >> 16),
+				byte(altView >> 8), byte(altView),
+			}
+			for i := 0; i < 8; i++ {
+				altSeed[i] ^= altViewBytes[i]
+			}
+			altSelected := c.selector.SelectProposer(currentEpoch, altSeed)
+			if altSelected != nil && !c.suspectedOfflineLeaders[altSelected.ID] {
+				logger.Info("✅ PBFT liveness: skipping offline leader %s, using view+%d leader %s",
+					selected.ID, offset, altSelected.ID)
+				selected = altSelected
+				foundAlternate = true
+				break
+			}
+		}
+		if !foundAlternate {
+			logger.Warn("⚠️ PBFT liveness: no non-offline alternate leader found, clearing suspect list and retrying")
+			c.suspectedOfflineLeaders = make(map[string]bool)
+			c.consecutiveViewChanges = 0
+		}
+	}
 
 	// Handle case where no validator was selected
 	if selected == nil {
@@ -839,8 +885,19 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 	if proposal.SlotNumber > 0 {
 		// Calculate epoch from proposal's slot
 		slotEpoch := proposal.SlotNumber / SlotsPerEpoch
-		// Get RANDAO seed for that slot
+		// Get RANDAO seed for that slot, mixed with view for deterministic leader rotation
 		seed := c.randao.GetSeed(proposal.SlotNumber)
+		// Apply the same view-based XOR as in updateLeaderStatusLocked
+		pView := proposal.View
+		pViewBytes := [8]byte{
+			byte(pView >> 56), byte(pView >> 48),
+			byte(pView >> 40), byte(pView >> 32),
+			byte(pView >> 24), byte(pView >> 16),
+			byte(pView >> 8), byte(pView),
+		}
+		for i := 0; i < 8; i++ {
+			seed[i] ^= pViewBytes[i]
+		}
 		// Select proposer for that epoch using the seed
 		selected := c.selector.SelectProposer(slotEpoch, seed)
 		if selected != nil {
@@ -881,6 +938,13 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 
 	// P2-4: reset view change backoff on successful proposal receipt
 	c.viewChangeBackoff = 2 * time.Second
+
+	// PBFT liveness: clear proposer from suspected list when they successfully propose
+	if c.suspectedOfflineLeaders[proposal.ProposerID] {
+		logger.Info("✅ PBFT liveness: leader %s is back online (received valid proposal), clearing suspected status", proposal.ProposerID)
+		delete(c.suspectedOfflineLeaders, proposal.ProposerID)
+	}
+	c.consecutiveViewChanges = 0
 
 	// Store prepared block and move to pre-prepared phase
 	c.preparedBlock = proposal.Block
@@ -1661,6 +1725,8 @@ func (c *Consensus) commitBlock(block Block) {
 	c.viewChangeBackoff = 2 * time.Second              // reset backoff for new round
 	c.lastBlockTime = common.GetTimeService().Now()
 	c.lastProposalTime = common.GetTimeService().Now() // reset so shouldPreventViewChange doesn't immediately expire
+	// Reset PBFT liveness tracking on successful commit
+	c.consecutiveViewChanges = 0
 	// Clear sticky-proposal for the committed height
 	if c.lastPreparedHeight <= block.GetHeight() {
 		c.lastPreparedBlock = nil
@@ -1731,6 +1797,16 @@ func (c *Consensus) startViewChange() {
 		// Calculate new view number
 		newView = c.currentView + 1
 		logger.Info("🔄 Node %s initiating view change to view %d", c.nodeID, newView)
+
+		// Track consecutive view changes to detect offline leaders (PBFT liveness fix)
+		c.consecutiveViewChanges++
+		if c.consecutiveViewChanges >= 3 && c.electedLeaderID != "" {
+			if !c.suspectedOfflineLeaders[c.electedLeaderID] {
+				logger.Warn("⚠️ PBFT liveness: marking leader %s as suspected offline after %d consecutive view changes",
+					c.electedLeaderID, c.consecutiveViewChanges)
+				c.suspectedOfflineLeaders[c.electedLeaderID] = true
+			}
+		}
 
 		// Update consensus state
 		c.currentView = newView

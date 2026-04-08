@@ -299,6 +299,10 @@ type Consensus struct {
 
 	// P2-4: devMode skips SPHINCS+ sig verification on votes/proposals for testnet
 	devMode bool
+
+	// PBFT liveness: skip offline/syncing leaders after repeated failures
+	consecutiveViewChanges int            // how many view changes without a committed block
+	suspectedOfflineLeaders map[string]bool // leaders that have repeatedly failed to propose
 }
 
 // SigningService handles cryptographic signing for consensus messages
