@@ -280,10 +280,14 @@ func (c *Consensus) UpdateLeaderStatus() {
 	c.updateLeaderStatus() // Call private implementation
 }
 
-// updateLeaderStatusLocked is the lock-free RANDAO leader election core.
+// updateLeaderStatusLocked is the deterministic PBFT leader election core.
 // Caller MUST hold c.mu.
+//
+// SPLIT-BRAIN FIX: Use view % len(sortedValidators) — fully deterministic,
+// no RANDAO dependency (RANDAO mix can diverge across nodes → different seeds
+// → different winners). Every node with the same sorted validator list and same
+// view number will elect the exact same leader.
 func (c *Consensus) updateLeaderStatusLocked() {
-	// Always use RANDAO slot-based election — round-robin removed to prevent split votes.
 	currentSlot := c.timeConverter.CurrentSlot()
 	currentEpoch := currentSlot / SlotsPerEpoch
 
@@ -292,87 +296,70 @@ func (c *Consensus) updateLeaderStatusLocked() {
 		c.onEpochTransition(currentEpoch)
 	}
 
-	// Get RANDAO seed for current slot and select proposer
-	// Mix in the current view number so that different views elect different leaders.
-	// All nodes that agree on the same view will derive the same seed (deterministic).
-	seed := c.randao.GetSeed(currentSlot)
-	// XOR the first 8 bytes with the view number for view-based leader rotation
-	viewBytes := [8]byte{
-		byte(c.currentView >> 56), byte(c.currentView >> 48),
-		byte(c.currentView >> 40), byte(c.currentView >> 32),
-		byte(c.currentView >> 24), byte(c.currentView >> 16),
-		byte(c.currentView >> 8), byte(c.currentView),
+	// Get sorted validator list from validatorSet (same registry on all nodes once synced)
+	// Using validatorSet.GetActiveValidators is more reliable than getValidators() which
+	// depends on the P2P peer list (which varies per-node and is not consistently ordered).
+	var validators []string
+	if c.validatorSet != nil {
+		active := c.validatorSet.GetActiveValidators(currentEpoch)
+		for _, v := range active {
+			validators = append(validators, v.ID)
+		}
 	}
-	for i := 0; i < 8; i++ {
-		seed[i] ^= viewBytes[i]
+	// Fall back to getValidators() if validatorSet is empty
+	if len(validators) == 0 {
+		validators = c.getValidators() // sorted alphabetically
 	}
-	selected := c.selector.SelectProposer(currentEpoch, seed)
+	if len(validators) == 0 {
+		c.isLeader = false
+		c.electedLeaderID = ""
+		c.electedSlot = 0
+		logger.Warn("Leader election: validator set empty for view %d — waiting", c.currentView)
+		return
+	}
 
-	// PBFT liveness: if selected leader is suspected offline, try next views
-	// to find an available leader rather than cycling through view changes indefinitely.
-	if selected != nil && c.suspectedOfflineLeaders[selected.ID] {
-		logger.Warn("⚠️ PBFT liveness: elected leader %s is suspected offline, trying alternate view offsets", selected.ID)
+	// Deterministic leader: nextBlockHeight mod len(validators), same on ALL nodes.
+	// Using block height (not view) ensures rotation per block even when view resets to 0.
+	// All nodes in consensus have the same chain height → same elected leader.
+	var nextHeight uint64
+	if c.blockChain != nil {
+		nextHeight = c.blockChain.GetLatestBlock().GetHeight() + 1
+	}
+	electedIndex := int(nextHeight) % len(validators)
+	electedID := validators[electedIndex]
+
+	// PBFT liveness: if elected leader is suspected offline, rotate to next
+	if c.suspectedOfflineLeaders[electedID] {
+		logger.Warn("⚠️ PBFT liveness: elected leader %s is suspected offline, rotating", electedID)
 		foundAlternate := false
-		for offset := uint64(1); offset <= 10; offset++ {
-			altSeed := c.randao.GetSeed(currentSlot)
-			altView := c.currentView + offset
-			altViewBytes := [8]byte{
-				byte(altView >> 56), byte(altView >> 48),
-				byte(altView >> 40), byte(altView >> 32),
-				byte(altView >> 24), byte(altView >> 16),
-				byte(altView >> 8), byte(altView),
-			}
-			for i := 0; i < 8; i++ {
-				altSeed[i] ^= altViewBytes[i]
-			}
-			altSelected := c.selector.SelectProposer(currentEpoch, altSeed)
-			if altSelected != nil && !c.suspectedOfflineLeaders[altSelected.ID] {
-				logger.Info("✅ PBFT liveness: skipping offline leader %s, using view+%d leader %s",
-					selected.ID, offset, altSelected.ID)
-				selected = altSelected
+		for offset := 1; offset <= len(validators); offset++ {
+			altID := validators[(electedIndex+offset)%len(validators)]
+			if !c.suspectedOfflineLeaders[altID] {
+				logger.Info("✅ PBFT liveness: skipping offline leader %s, using %s (offset %d)",
+					electedID, altID, offset)
+				electedID = altID
 				foundAlternate = true
 				break
 			}
 		}
 		if !foundAlternate {
-			logger.Warn("⚠️ PBFT liveness: no non-offline alternate leader found, clearing suspect list and retrying")
+			logger.Warn("⚠️ PBFT liveness: all validators suspected offline, clearing suspect list")
 			c.suspectedOfflineLeaders = make(map[string]bool)
 			c.consecutiveViewChanges = 0
 		}
 	}
 
-	// Handle case where no validator was selected
-	if selected == nil {
-		validators := c.getValidators()
-		if len(validators) == 0 {
-			// No validators yet — wait, don't elect anyone
-			c.isLeader = false
-			c.electedLeaderID = ""
-			c.electedSlot = 0
-			logger.Warn("No validator selected for slot %d (validator set empty — waiting)", currentSlot)
-			return
-		}
-		// RANDAO returned nil but we have validators: fall back to index 0 (alphabetical)
-		sort.Strings(validators)
-		fallback := validators[0]
-		c.electedLeaderID = fallback
-		c.electedSlot = currentSlot
-		c.isLeader = (fallback == c.nodeID)
-		logger.Warn("RANDAO returned nil for slot %d, falling back to first validator %s", currentSlot, fallback)
-		return
-	}
-
 	// Store the elected leader information
-	c.electedLeaderID = selected.ID
+	c.electedLeaderID = electedID
 	c.electedSlot = currentSlot
-	c.isLeader = (selected.ID == c.nodeID)
+	c.isLeader = (electedID == c.nodeID)
 
 	if c.isLeader {
-		logger.Info("✅ Node %s selected as proposer for slot %d with stake %.2f QTX",
-			c.nodeID, currentSlot, selected.GetStakeInQTX())
+		logger.Info("✅ Node %s elected as leader for view %d (index %d of %d validators)",
+			c.nodeID, c.currentView, electedIndex, len(validators))
 	} else {
-		logger.Info("   Node %s NOT selected for slot %d (selected: %s with %.2f QTX)",
-			c.nodeID, currentSlot, selected.ID, selected.GetStakeInQTX())
+		logger.Info("   Node %s is NOT leader for view %d (leader: %s, index %d of %d)",
+			c.nodeID, c.currentView, electedID, electedIndex, len(validators))
 	}
 }
 
@@ -879,52 +866,38 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		return
 	}
 
-	// ── KEY FIX: Re-derive electedLeaderID from the proposal's own slot ──────
-	// This eliminates the race where the follower's CurrentSlot() differs from
-	// the leader's slot at proposal time, causing a different seed → different winner.
-	if proposal.SlotNumber > 0 {
-		// Calculate epoch from proposal's slot
-		slotEpoch := proposal.SlotNumber / SlotsPerEpoch
-		// Get RANDAO seed for that slot, mixed with view for deterministic leader rotation
-		seed := c.randao.GetSeed(proposal.SlotNumber)
-		// Apply the same view-based XOR as in updateLeaderStatusLocked
-		pView := proposal.View
-		pViewBytes := [8]byte{
-			byte(pView >> 56), byte(pView >> 48),
-			byte(pView >> 40), byte(pView >> 32),
-			byte(pView >> 24), byte(pView >> 16),
-			byte(pView >> 8), byte(pView),
+	// ── SPLIT-BRAIN FIX: Re-derive electedLeaderID deterministically from block height ──
+	// Use nextBlockHeight % len(sortedValidators): same formula as updateLeaderStatusLocked.
+	// Use validatorSet.GetActiveValidators for consistent validator list on all nodes.
+	{
+		var validators []string
+		if c.validatorSet != nil {
+			epoch := proposal.Block.GetHeight() / SlotsPerEpoch
+			active := c.validatorSet.GetActiveValidators(epoch)
+			for _, v := range active {
+				validators = append(validators, v.ID)
+			}
 		}
-		for i := 0; i < 8; i++ {
-			seed[i] ^= pViewBytes[i]
+		if len(validators) == 0 {
+			validators = c.getValidators() // fallback to P2P list
 		}
-		// Select proposer for that epoch using the seed
-		selected := c.selector.SelectProposer(slotEpoch, seed)
-		if selected != nil {
-			// Use the selected leader
-			c.electedLeaderID = selected.ID
-			logger.Info("🔄 Follower re-derived electedLeaderID=%s for slot %d (epoch %d)",
-				c.electedLeaderID, proposal.SlotNumber, slotEpoch)
+		if len(validators) > 0 {
+			nextHeight := proposal.Block.GetHeight() // the height being proposed
+			electedIndex := int(nextHeight) % len(validators)
+			expectedLeader := validators[electedIndex]
+			c.electedLeaderID = expectedLeader
+			logger.Info("🔄 Follower derived electedLeaderID=%s for height %d (index %d of %d validators)",
+				expectedLeader, nextHeight, electedIndex, len(validators))
 		} else {
-			// If selection returned nil, accept the proposer's self-declared ID
-			// and let signature verification be the security gate.
-			logger.Warn("⚠️ SelectProposer returned nil for slot %d, trusting signed proposal", proposal.SlotNumber)
-			c.electedLeaderID = proposal.ProposerID
+			// No validators known yet — re-run normal election
+			c.updateLeaderStatusLocked()
 		}
-	} else if proposal.ElectedLeaderID != "" {
-		// Older proposal without SlotNumber: use the embedded ElectedLeaderID.
-		// Security relies entirely on the proposal signature in this path.
-		logger.Warn("⚠️ Proposal has no SlotNumber, using embedded ElectedLeaderID=%s", proposal.ElectedLeaderID)
-		c.electedLeaderID = proposal.ElectedLeaderID
-	} else {
-		// Last resort: re-run with current slot (RANDAO, already holding lock)
-		c.updateLeaderStatusLocked()
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 
-	// Validate that the proposer is the legitimate leader
+	// Validate that the proposer is the legitimate leader — REJECT if not
 	if !c.isValidLeader(proposal.ProposerID, proposal.View) {
-		logger.Warn("❌ Invalid leader %s for view %d (electedLeaderID=%s)",
+		logger.Warn("❌ SPLIT-BRAIN GUARD: Rejecting proposal from non-leader %s for view %d (expected leader: %s)",
 			proposal.ProposerID, proposal.View, c.electedLeaderID)
 		return
 	}
