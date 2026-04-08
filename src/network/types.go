@@ -153,6 +153,7 @@ type NodePortConfig struct {
 	DevMode      bool   `json:"dev_mode,omitempty"`        // FIX-P2P-03: skip DHT, use direct TCP peering
 	SeedHTTPPort string `json:"seed_http_port,omitempty"`  // HTTP port of seed node (e.g. "8590")
 	ExplicitSeeds bool  `json:"explicit_seeds,omitempty"`  // true when -seeds flag was explicitly provided
+	TotalNodes    int   `json:"total_nodes,omitempty"`     // total expected validators in devnet
 }
 
 // DiscoveryMessage represents a UDP discovery message.
