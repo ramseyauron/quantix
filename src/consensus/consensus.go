@@ -1323,6 +1323,13 @@ func (c *Consensus) processTimeout(timeout *TimeoutMsg) {
 		logger.Warn("WARNING: No signing service, accepting unsigned timeout from %s", timeout.VoterID)
 	}
 
+	// Discard timeout votes if a block was committed recently (within 30s) — this prevents
+	// stale accumulated timeouts from causing cascading view changes after commit.
+	if c.currentHeight > 0 && common.GetTimeService().Now().Sub(c.lastBlockTime) < 30*time.Second {
+		logger.Info("Discarding timeout vote for view %d — block committed recently (height=%d)", timeout.View, c.currentHeight)
+		return
+	}
+
 	// F-13: Collect timeout messages per view and only advance when f+1 distinct validators agree.
 	if timeout.View > c.currentView {
 		if c.timeoutVotes[timeout.View] == nil {
@@ -1647,6 +1654,11 @@ func (c *Consensus) commitBlock(block Block) {
 
 	// Update consensus state
 	c.currentHeight = block.GetHeight()
+	// NOTE: do NOT reset currentView to 0 here — other nodes may be at a higher view
+	// and will propose at that view; resetting would cause stale-proposal rejections.
+	// Instead, just ensure no stale timeout votes remain for views ≤ current.
+	c.lastViewChange = common.GetTimeService().Now()   // rate-limit view changes for new round
+	c.viewChangeBackoff = 2 * time.Second              // reset backoff for new round
 	c.lastBlockTime = common.GetTimeService().Now()
 	c.lastProposalTime = common.GetTimeService().Now() // reset so shouldPreventViewChange doesn't immediately expire
 	// Clear sticky-proposal for the committed height
@@ -1654,6 +1666,8 @@ func (c *Consensus) commitBlock(block Block) {
 		c.lastPreparedBlock = nil
 		c.lastPreparedHeight = 0
 	}
+	// Clear ALL accumulated timeout votes to prevent cascading view changes
+	c.timeoutVotes = make(map[uint64]map[string]*TimeoutMsg)
 	c.resetConsensusState()
 
 	// Prune stale proposal signatures for this height (losing proposals from

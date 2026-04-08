@@ -1109,17 +1109,11 @@ func (sm *StateMachine) isValidator() bool {
 }
 
 func (sm *StateMachine) checkProgress() {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	// Check if we're making progress
-	if time.Since(sm.currentState.Timestamp) > 30*time.Second {
-		// Trigger view change if stuck
-		select {
-		case sm.timeoutCh <- struct{}{}:
-		default:
-		}
-	}
+	// NOTE: The SMR-layer view change is disabled. The PBFT consensus engine in
+	// src/consensus/consensus.go handles all view changes authoritatively.
+	// This vestigial check was firing continuously because sm.currentState.Timestamp
+	// was never updated from the real blockchain, causing a cascade of spurious view
+	// change messages ("View change triggered, new view: N") that polluted the logs.
 }
 
 func (sm *StateMachine) handleTimeout() {
