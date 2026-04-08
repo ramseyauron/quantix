@@ -528,7 +528,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 						log.Printf("⚠️  P2-PBFT: consensus.Start failed at quorum: %v", err)
 					} else {
 						log.Printf("🚀 P2-PBFT: consensus engine started — PBFT quorum reached (%d validators)", n)
-						resources[0].Blockchain.StartLeaderLoop(context.Background())
+						// Start leader loop on THIS node's blockchain
+						go resources[0].Blockchain.StartLeaderLoop(context.Background())
 						log.Printf("🏁 P2-PBFT: leader loop started for peer node")
 					}
 					close(minerStopCh)
