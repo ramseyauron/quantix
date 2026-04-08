@@ -1699,8 +1699,17 @@ func (c *Consensus) startViewChange() {
 
 		// Check conditions for view change
 		if c.phase != PhaseIdle {
-			c.mu.Unlock()
-			return // Only change view in idle phase
+			// Allow view change if we've been stuck in a non-idle phase for too long
+			// (e.g., PhasePrePrepared after accepting a proposal that never got quorum).
+			// This is the key fix for PBFT deadlock after Option A fresh start.
+			stuckTooLong := common.GetTimeService().Now().Sub(c.lastProposalTime) > 30*time.Second
+			if !stuckTooLong {
+				c.mu.Unlock()
+				return // Only block view change if not stuck too long
+			}
+			// Force-reset stale phase so view change can proceed
+			logger.Info("🔄 Force-resetting stale phase %d → idle (stuck for >30s), allowing view change", c.phase)
+			c.resetConsensusState()
 		}
 		if common.GetTimeService().Now().Sub(c.lastViewChange) < 30*time.Second {
 			c.mu.Unlock()
