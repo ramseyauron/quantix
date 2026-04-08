@@ -1860,6 +1860,25 @@ func (bc *Blockchain) CommitBlock(block consensus.Block) error {
 			bc.StatusString(bc.GetStatus()))
 	}
 
+	// JARVIS fix: guard against double-commit at the same height.
+	// If we've already committed a block at this height, skip re-execution
+	// (which would apply rewards twice and corrupt the state root).
+	{
+		bc.lock.RLock()
+		currentLen := len(bc.chain)
+		bc.lock.RUnlock()
+		if currentLen > 0 {
+			bc.lock.RLock()
+			latestHeight := bc.chain[currentLen-1].GetHeight()
+			bc.lock.RUnlock()
+			if typeBlock.GetHeight() <= latestHeight {
+				logger.Warn("⚠️ CommitBlock: skipping duplicate commit for height=%d (already at height=%d)",
+					typeBlock.GetHeight(), latestHeight)
+				return nil
+			}
+		}
+	}
+
 	// Store block in storage
 	// Execute block: apply transactions, mint reward, compute real StateRoot.
 	stateRoot, err := bc.ExecuteBlock(typeBlock)
