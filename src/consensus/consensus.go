@@ -907,7 +907,10 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		c.nodeID, proposal.Block.GetHash(), proposal.View, proposal.Block.GetHeight(), nonceStr)
 
 	// P2-5: record proposal arrival time for partition detection
-	c.lastProposalTime = common.GetTimeService().Now()
+	// JARVIS fix: don't reset timer on own proposals — that would prevent self-triggering view changes
+	if proposal.ProposerID != c.nodeID {
+		c.lastProposalTime = common.GetTimeService().Now()
+	}
 
 	// P2-4: reset view change backoff on successful proposal receipt
 	c.viewChangeBackoff = 2 * time.Second
@@ -1369,6 +1372,11 @@ func (c *Consensus) processTimeout(timeout *TimeoutMsg) {
 
 	// F-13: Collect timeout messages per view and only advance when f+1 distinct validators agree.
 	if timeout.View > c.currentView {
+		// JARVIS fix: track highest view seen from peers
+		if timeout.View > c.highestSeenView {
+			c.highestSeenView = timeout.View
+		}
+
 		if c.timeoutVotes[timeout.View] == nil {
 			c.timeoutVotes[timeout.View] = make(map[string]*TimeoutMsg)
 		}
@@ -1768,7 +1776,11 @@ func (c *Consensus) startViewChange() {
 		}
 
 		// Calculate new view number
+		// JARVIS fix: sync to highest view seen from peers to close view-number gaps
 		newView = c.currentView + 1
+		if c.highestSeenView >= newView {
+			newView = c.highestSeenView
+		}
 		logger.Info("🔄 Node %s initiating view change to view %d", c.nodeID, newView)
 
 		// Track consecutive view changes to detect offline leaders (PBFT liveness fix)

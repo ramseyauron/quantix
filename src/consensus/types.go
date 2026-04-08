@@ -303,6 +303,9 @@ type Consensus struct {
 	// PBFT liveness: skip offline/syncing leaders after repeated failures
 	consecutiveViewChanges int            // how many view changes without a committed block
 	suspectedOfflineLeaders map[string]bool // leaders that have repeatedly failed to propose
+
+	// JARVIS fix: track highest view seen from peers to sync on view change
+	highestSeenView uint64
 }
 
 // SigningService handles cryptographic signing for consensus messages
