@@ -1483,6 +1483,34 @@ func (c *Consensus) voteForBlock(blockHash string, view uint64) {
 	go func() { _ = c.HandleVote(vote) }()
 	logger.Info("🗳️ Node %s sent COMMIT vote for block %s (height %d) at view %d",
 		c.nodeID, blockHash, blockToVote.GetHeight(), view)
+
+	// LIVENESS FIX: Retransmit the commit vote every 500ms until quorum or view-change.
+	// With n=3 validators and the strict >2/3 quorum, a single lost commit vote stalls
+	// the chain. Periodic retransmission ensures eventual delivery.
+	capturedView := view
+	capturedHash := blockHash
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-ticker.C:
+				c.mu.RLock()
+				currentView := c.currentView
+				currentPhase := c.phase
+				c.mu.RUnlock()
+				// Stop retransmitting if view changed or block was committed (phase reset to Idle)
+				if currentView != capturedView || currentPhase == PhaseCommitted || currentPhase == PhaseIdle {
+					return
+				}
+				// Retransmit to ensure all peers have the vote
+				_ = c.broadcastVote(vote)
+				logger.Info("🔄 Retransmitting commit vote for block %s (view %d)", capturedHash, capturedView)
+			}
+		}
+	}()
 }
 
 // hasQuorum checks if a block has achieved commit quorum based on stake weight

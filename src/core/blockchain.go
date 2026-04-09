@@ -2358,6 +2358,16 @@ func (bc *Blockchain) GetBlockByHash(hash string) consensus.Block {
 	// Get block from storage
 	block, err := bc.storage.GetBlockByHash(hash)
 	if err != nil || block == nil {
+		// Height-based fallback: search all stored blocks for matching hash.
+		// This handles the case where FinalizeHash changed the hash after consensus
+		// voted, and the AddHashAlias in-memory alias was lost (e.g. on restart
+		// or at a node that never proposed the block).
+		allBlocks, _ := bc.storage.GetAllBlocks()
+		for _, b := range allBlocks {
+			if b.GetHash() == hash {
+				return NewBlockHelper(b)
+			}
+		}
 		return nil // Block not found
 	}
 	// Wrap in adapter for consensus interface

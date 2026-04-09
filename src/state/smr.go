@@ -556,6 +556,14 @@ func (sm *StateMachine) FinalStatePopulated(state *FinalStateInfo) *FinalStateIn
 		if err == nil && block != nil {
 			state.MerkleRoot = sm.extractMerkleRootFromBlock(block)
 			logger.Info("🔄 Fixed empty merkle_root for %s: %s", state.BlockHash, state.MerkleRoot)
+		} else if state.BlockHeight > 0 {
+			// Hash lookup failed — try height-based fallback (handles FinalizeHash hash mutation)
+			if b2, err2 := sm.storage.GetBlockByHeight(state.BlockHeight); err2 == nil && b2 != nil {
+				state.MerkleRoot = sm.extractMerkleRootFromBlock(b2)
+				logger.Info("🔄 Fixed merkle_root via height=%d for %s: %s", state.BlockHeight, state.BlockHash, state.MerkleRoot)
+			} else {
+				state.MerkleRoot = fmt.Sprintf("calculated_%s", state.BlockHash[:16])
+			}
 		} else {
 			state.MerkleRoot = fmt.Sprintf("calculated_%s", state.BlockHash[:16])
 		}
