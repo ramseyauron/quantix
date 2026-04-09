@@ -773,22 +773,9 @@ func (s *Server) handleGetValidators(c *gin.Context) {
 		})
 	}
 
-	// Also include any proposers discovered in blocks that aren't in the registry.
-	for addr, cnt := range proposerCount {
-		if seen[addr] {
-			continue
-		}
-		seen[addr] = true
-		result = append(result, ValidatorInfoResponse{
-			Address:        addr,
-			NodeID:         "unknown",
-			Stake:          0,
-			Status:         "active",
-			BlocksProduced: cnt,
-			RewardAddress:  addr,
-		})
-		activeCount++
-	}
+	// Note: block proposers not in the registry are intentionally excluded from
+	// the validator list to prevent ghost/pre-PBFT miners from inflating the count.
+	// The validator count is used for PBFT quorum calculation; ghost entries break it.
 
 	c.JSON(http.StatusOK, gin.H{
 		"validators": result,

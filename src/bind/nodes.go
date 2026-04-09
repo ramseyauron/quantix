@@ -453,15 +453,25 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					resp.Body.Close()
 					break
 				}
-				log.Printf("🔍 Validator count: %d / 4", n)
-				if n >= 4 && !pbftReady {
+				expectedN := nodeConfig.TotalNodes
+				if expectedN <= 0 {
+					expectedN = 3
+				}
+				log.Printf("🔍 Validator count: %d / %d", n, expectedN)
+				if n >= expectedN && !pbftReady {
 					pbftReady = true
-					log.Printf("🎉 %s: 4 validators registered — syncing to consensus validatorSet", nodeConfig.Name)
+					log.Printf("🎉 %s: %d validators registered — syncing to consensus validatorSet", nodeConfig.Name, expectedN)
 					// P2-PBFT: sync all registered validators into the consensus validatorSet.
 					cons := pbftConsensus
 					if cons != nil {
 						vs := cons.GetValidatorSet()
 						if vs != nil {
+							// Remove the initial hash-based self-registration (added at startup) before
+							// syncing address-based validators from the registry. This ensures all nodes
+							// have the same deterministic validator set for PBFT leader election.
+							selfHashID := resources[0].P2PServer.LocalNode().ID
+							vs.DeleteValidator(selfHashID)
+							log.Printf("🧹 P2-PBFT: removed hash-based self (%s) before syncing address validators", selfHashID)
 							// Sort deterministically so all peer nodes register validators in the same order.
 								// Consistent ordering ensures RANDAO leader election is deterministic.
 								sort.Slice(lastValidators, func(i, j int) bool {
@@ -572,6 +582,10 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 				pbftReady = true
 				log.Printf("🎉 Seed node: 4 validators — syncing consensus validatorSet")
 				if vs := cons.GetValidatorSet(); vs != nil {
+					// Remove hash-based self-ID added at startup before syncing address-based validators.
+					selfHashID := resources[0].P2PServer.LocalNode().ID
+					vs.DeleteValidator(selfHashID)
+					log.Printf("🧹 P2-PBFT: seed node removed hash-based self (%s) before syncing", selfHashID)
 					// Sort deterministically so seed node uses same order as peer nodes.
 					sort.Slice(validators, func(i, j int) bool {
 						return validators[i].NodeAddress < validators[j].NodeAddress
