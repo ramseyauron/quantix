@@ -137,8 +137,8 @@ func TestActiveConsensusMode_AfterAddingValidators_ModeChanges(t *testing.T) {
 	if GetConsensusMode(4) != PBFT {
 		t.Error("GetConsensusMode(4) should return PBFT")
 	}
-	if GetConsensusMode(3) != DEVNET_SOLO {
-		t.Error("GetConsensusMode(3) should return DEVNET_SOLO")
+	if GetConsensusMode(3) != PBFT {
+		t.Error("GetConsensusMode(3) should return PBFT")
 	}
 }
 

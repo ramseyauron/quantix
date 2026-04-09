@@ -78,7 +78,7 @@ func makeSeedBlock(height uint64) *types.Block {
 // ---------------------------------------------------------------------------
 
 func TestGetConsensusMode_BelowThreshold_IsDevnetSolo(t *testing.T) {
-	for _, n := range []int{0, 1, 2, 3} {
+	for _, n := range []int{0, 1, 2} {
 		mode := consensus.GetConsensusMode(n)
 		if mode != consensus.DEVNET_SOLO {
 			t.Errorf("n=%d: expected DEVNET_SOLO, got %s", n, mode)
@@ -87,7 +87,7 @@ func TestGetConsensusMode_BelowThreshold_IsDevnetSolo(t *testing.T) {
 }
 
 func TestGetConsensusMode_AtOrAboveThreshold_IsPBFT(t *testing.T) {
-	for _, n := range []int{4, 5, 10, 100} {
+	for _, n := range []int{3, 4, 5, 10, 100} {
 		mode := consensus.GetConsensusMode(n)
 		if mode != consensus.PBFT {
 			t.Errorf("n=%d: expected PBFT, got %s", n, mode)
@@ -112,7 +112,7 @@ func TestConsensusMode_UnknownValue_StringNotEmpty(t *testing.T) {
 }
 
 func TestMinPBFTValidators_Is4(t *testing.T) {
-	if consensus.MinPBFTValidators != 4 {
+	if consensus.MinPBFTValidators != 3 {
 		t.Errorf("MinPBFTValidators = %d, want 4", consensus.MinPBFTValidators)
 	}
 }

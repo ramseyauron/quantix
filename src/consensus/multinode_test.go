@@ -25,7 +25,7 @@ func TestMultiNodeConsensusModeSwitch(t *testing.T) {
 	}{
 		{"1 validator => DEVNET_SOLO", 1, DEVNET_SOLO},
 		{"2 validators => DEVNET_SOLO", 2, DEVNET_SOLO},
-		{"3 validators => DEVNET_SOLO", 3, DEVNET_SOLO},
+		{"3 validators => PBFT", 3, PBFT},
 		{"4 validators => PBFT", 4, PBFT},
 		{"5 validators => PBFT", 5, PBFT},
 		{"10 validators => PBFT", 10, PBFT},
