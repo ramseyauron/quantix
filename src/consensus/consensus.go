@@ -1813,7 +1813,7 @@ func (c *Consensus) startViewChange() {
 
 		// Track consecutive view changes to detect offline leaders (PBFT liveness fix)
 		c.consecutiveViewChanges++
-		if c.consecutiveViewChanges >= 3 && c.electedLeaderID != "" {
+		if c.consecutiveViewChanges >= 50 && c.electedLeaderID != "" {
 			if !c.suspectedOfflineLeaders[c.electedLeaderID] {
 				logger.Warn("⚠️ PBFT liveness: marking leader %s as suspected offline after %d consecutive view changes",
 					c.electedLeaderID, c.consecutiveViewChanges)
