@@ -1737,9 +1737,12 @@ func (c *Consensus) commitBlock(block Block) {
 
 	// Update consensus state
 	c.currentHeight = block.GetHeight()
-	// NOTE: do NOT reset currentView to 0 here — other nodes may be at a higher view
-	// and will propose at that view; resetting would cause stale-proposal rejections.
-	// Instead, just ensure no stale timeout votes remain for views ≤ current.
+	// FIX: Reset currentView to 1 after each successful block commit so that
+	// the next round always starts fresh at view 1. NOT resetting causes nodes
+	// that went through view changes (view 2, 3, ...) to reject the next leader's
+	// proposal at view 1 as "stale" (proposal.View < c.currentView), permanently
+	// halting the chain under load.
+	c.currentView = 1
 	c.lastViewChange = common.GetTimeService().Now()   // rate-limit view changes for new round
 	c.viewChangeBackoff = 2 * time.Second              // reset backoff for new round
 	c.lastBlockTime = common.GetTimeService().Now()
