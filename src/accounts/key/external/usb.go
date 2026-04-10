@@ -328,7 +328,8 @@ func (ks *USBKeyStore) EncryptData(data []byte, passphrase string) ([]byte, []by
 		return nil, nil, fmt.Errorf("failed to generate KDF salt: %w", err)
 	}
 
-	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 1000) {
+	// SEC-K02: Use 100,000 KDF rounds to match DiskKeyStore strength (was 1,000)
+	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 100000) {
 		return nil, nil, fmt.Errorf("failed to set encryption key")
 	}
 
@@ -350,7 +351,12 @@ func (ks *USBKeyStore) DecryptKey(keyPair *key.KeyPair, passphrase string) ([]by
 		salt = ks.generateSalt(passphrase) // legacy fallback
 	}
 
-	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, 1000) {
+	// SEC-K02: New keys use 100,000 rounds; legacy keys (no KDFSalt) retain 1,000-round fallback
+	kdfRounds := uint(100000)
+	if len(keyPair.KDFSalt) == 0 {
+		kdfRounds = 1000 // legacy compat
+	}
+	if !ks.crypt.SetKeyFromPassphrase([]byte(passphrase), salt, kdfRounds) {
 		return nil, fmt.Errorf("failed to set decryption key")
 	}
 
