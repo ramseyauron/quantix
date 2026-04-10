@@ -456,6 +456,8 @@ func SendMessage(address string, msg *security.Message) error {
 // BroadcastToAll sends a message to every active connection in the global connections map.
 // FIX-P2P-BROADCAST: avoids ephemeral-port vs peerManager address mismatch by
 // iterating actual connections rather than peer.Node.Address lookups.
+// FIX-P2P-RECONNECT: on write error, remove the dead connection from the map so
+// EnsureConnected will re-dial it on the next reconnect loop tick.
 func BroadcastToAll(msg *security.Message) []error {
 	globalServer.mu.Lock()
 	type connEntry struct {
@@ -473,6 +475,7 @@ func BroadcastToAll(msg *security.Message) []error {
 	globalServer.mu.Unlock()
 
 	var errs []error
+	var deadAddrs []string
 	for _, e := range entries {
 		data, err := security.SecureMessage(msg, e.enc)
 		if err != nil {
@@ -483,13 +486,25 @@ func BroadcastToAll(msg *security.Message) []error {
 		binary.BigEndian.PutUint32(lengthBuf, uint32(len(data)))
 		if _, err := e.conn.Write(lengthBuf); err != nil {
 			errs = append(errs, fmt.Errorf("BroadcastToAll write length to %s: %v", e.addr, err))
+			deadAddrs = append(deadAddrs, e.addr)
 			continue
 		}
 		if _, err := e.conn.Write(data); err != nil {
 			errs = append(errs, fmt.Errorf("BroadcastToAll write data to %s: %v", e.addr, err))
+			deadAddrs = append(deadAddrs, e.addr)
 			continue
 		}
 		log.Printf("BroadcastToAll: sent %s to %s", msg.Type, e.addr)
+	}
+	// Purge dead connections so EnsureConnected will re-dial them.
+	if len(deadAddrs) > 0 {
+		globalServer.mu.Lock()
+		for _, addr := range deadAddrs {
+			delete(globalServer.connections, addr)
+			delete(globalServer.encKeys, addr)
+			log.Printf("BroadcastToAll: removed dead connection %s", addr)
+		}
+		globalServer.mu.Unlock()
 	}
 	return errs
 }
@@ -512,4 +527,33 @@ func DisconnectNode(node *network.Node) error {
 	delete(globalServer.encKeys, addr)
 	log.Printf("Disconnected from node %s at %s", node.ID, addr)
 	return nil
+}
+
+// EnsureConnected checks if we have an active TCP connection to addr (host:port).
+// If not, it dials and performs the handshake so the connection is available for
+// BroadcastToAll. Used by the P2P reconnect loop to survive load-induced drops.
+func EnsureConnected(addr string) {
+	globalServer.mu.Lock()
+	_, exists := globalServer.connections[addr]
+	globalServer.mu.Unlock()
+	if exists {
+		return // already connected
+	}
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		log.Printf("EnsureConnected: dial %s failed: %v", addr, err)
+		return
+	}
+	handshake := security.NewHandshake()
+	enc, err := handshake.PerformHandshake(conn, "p2p", true)
+	if err != nil {
+		conn.Close()
+		log.Printf("EnsureConnected: handshake %s failed: %v", addr, err)
+		return
+	}
+	globalServer.mu.Lock()
+	globalServer.connections[addr] = conn
+	globalServer.encKeys[addr] = enc
+	globalServer.mu.Unlock()
+	log.Printf("EnsureConnected: reconnected to %s", addr)
 }

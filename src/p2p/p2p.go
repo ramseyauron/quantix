@@ -184,7 +184,25 @@ func (s *Server) Start() error {
 	// Start message handler goroutine
 	go s.handleMessages()
 
+	// Start periodic reconnect loop — re-dial seed nodes if connection drops.
+	// This ensures non-seed nodes reconnect to all seeds after a load-induced TCP drop,
+	// so PBFT proposals from any leader reach all validators (full-mesh via seed relay).
+	go s.runReconnectLoop()
+
 	return nil
+}
+
+// runReconnectLoop periodically checks that all seed node TCP connections are alive
+// and re-establishes them if they dropped. Runs every 15 seconds.
+func (s *Server) runReconnectLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, seedAddr := range s.seedNodes {
+			// seedAddr is UDP/TCP addr (host:port). Try TCP port directly.
+			transport.EnsureConnected(seedAddr)
+		}
+	}
 }
 
 // Close shuts down the P2P server.
