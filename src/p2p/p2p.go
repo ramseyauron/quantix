@@ -647,11 +647,25 @@ func (s *Server) handleMessages() {
 
 		case "gossip_block":
 			// FIX-P2P-05: handle incoming block from peer gossip
-			// FIX-P2P-GOSSIP2: handle map[string]interface{} from JSON deserialization
+			// FIX-GOSSIP-TXLIST: prefer string path (new format) which preserves
+			// big.Int values exactly. Fall back to map and *types.Block for old peers.
 			var block *types.Block
 			if b, ok := msg.Data.(*types.Block); ok {
+				// In-process direct delivery (tests)
 				block = b
+			} else if s, ok := msg.Data.(string); ok {
+				// New format: JSON string sent by BroadcastBlock — unmarshal directly
+				// so Block.UnmarshalJSON handles big.Int string fields and txs_list.
+				var b3 types.Block
+				if err := json.Unmarshal([]byte(s), &b3); err == nil {
+					block = &b3
+				} else {
+					log.Printf("gossip_block: unmarshal string error: %v", err)
+				}
 			} else if raw, ok := msg.Data.(map[string]interface{}); ok {
+				// Legacy fallback: re-marshal map → JSON → Block.
+				// NOTE: this path can lose precision on big.Int fields (float64 truncation).
+				// Kept only for backward compat; new senders use the string path above.
 				b2, err := json.Marshal(raw)
 				if err == nil {
 					var b3 types.Block
@@ -865,18 +879,29 @@ func (s *Server) Broadcast(msg *security.Message) {
 // BroadcastBlock sends a newly-committed block to all connected peers.
 // FIX-P2P-BROADCAST: use BroadcastToAll to avoid ephemeral-port/peerManager address mismatch.
 // SEC-P05: mark block as seen to suppress re-broadcast of incoming gossip blocks.
+// FIX-GOSSIP-TXLIST: serialize block as JSON string (not raw struct) so that
+// big.Int fields (Amount, GasLimit, etc.) are preserved exactly through the
+// transport layer. Receiving side decodes the string directly into *types.Block
+// via the custom UnmarshalJSON, bypassing the lossy map[string]interface{} path.
 func (s *Server) BroadcastBlock(block *types.Block) {
 	// Mark as seen so incoming gossip of this block is deduplicated.
 	s.markBlockSeen(block.GetHash())
+	// Serialize via Block.MarshalJSON (preserves big.Int as strings, txs_list intact)
+	blockBytes, err := json.Marshal(block)
+	if err != nil {
+		log.Printf("BroadcastBlock: marshal error: %v", err)
+		return
+	}
 	msg := &security.Message{
 		Type: "gossip_block",
-		Data: block,
+		Data: string(blockBytes), // send as JSON string, not struct
 	}
 	errs := transport.BroadcastToAll(msg)
-	for _, err := range errs {
-		log.Printf("BroadcastBlock: %v", err)
+	for _, e := range errs {
+		log.Printf("BroadcastBlock: %v", e)
 	}
-	log.Printf("BroadcastBlock: broadcast block height=%d to all connections (%d errors)", block.GetHeight(), len(errs))
+	log.Printf("BroadcastBlock: broadcast block height=%d txs=%d to all connections (%d errors)",
+		block.GetHeight(), len(block.Body.TxsList), len(errs))
 }
 
 // seenBlocksTTL is how long a block hash is remembered for dedup (5 minutes).
