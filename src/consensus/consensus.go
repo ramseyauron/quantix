@@ -782,6 +782,16 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		return
 	}
 
+	// FIX: If the new proposal is for a HIGHER height than what we have prepared,
+	// the old prepared block is stale (e.g. from a previous round that committed).
+	// Clear it so we can accept and prepare this new proposal.
+	if c.preparedBlock != nil && proposal.Block.GetHeight() > c.preparedBlock.GetHeight() {
+		logger.Info("🔄 Clearing stale preparedBlock (height=%d) for new proposal (height=%d)",
+			c.preparedBlock.GetHeight(), proposal.Block.GetHeight())
+		c.preparedBlock = nil
+		c.preparedView = 0
+	}
+
 	// Verify proposal signature if signing service available.
 	// F-12: Reject proposals with missing signatures when signing service is configured.
 	if c.signingService != nil && !c.devMode {
