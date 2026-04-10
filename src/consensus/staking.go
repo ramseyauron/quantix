@@ -117,6 +117,18 @@ func (vs *ValidatorSet) RegisterValidator(id, pubkey string, stake uint64, nodeA
 
 // UnregisterValidator removes a validator from the active set (P2-6).
 // Sets ExitEpoch so it is excluded from future epoch sets.
+// DeleteValidator permanently removes a validator entry from the set.
+// Unlike UnregisterValidator (which soft-deletes), this fully removes the entry.
+// Used to clean up temporary hash-based self-registrations before syncing real validators.
+func (vs *ValidatorSet) DeleteValidator(id string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if val, exists := vs.validators[id]; exists {
+		vs.totalStake.Sub(vs.totalStake, val.StakeAmount)
+		delete(vs.validators, id)
+	}
+}
+
 func (vs *ValidatorSet) UnregisterValidator(id string) error {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()

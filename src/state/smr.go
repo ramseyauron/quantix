@@ -556,6 +556,14 @@ func (sm *StateMachine) FinalStatePopulated(state *FinalStateInfo) *FinalStateIn
 		if err == nil && block != nil {
 			state.MerkleRoot = sm.extractMerkleRootFromBlock(block)
 			logger.Info("🔄 Fixed empty merkle_root for %s: %s", state.BlockHash, state.MerkleRoot)
+		} else if state.BlockHeight > 0 {
+			// Hash lookup failed — try height-based fallback (handles FinalizeHash hash mutation)
+			if b2, err2 := sm.storage.GetBlockByHeight(state.BlockHeight); err2 == nil && b2 != nil {
+				state.MerkleRoot = sm.extractMerkleRootFromBlock(b2)
+				logger.Info("🔄 Fixed merkle_root via height=%d for %s: %s", state.BlockHeight, state.BlockHash, state.MerkleRoot)
+			} else {
+				state.MerkleRoot = fmt.Sprintf("calculated_%s", state.BlockHash[:16])
+			}
 		} else {
 			state.MerkleRoot = fmt.Sprintf("calculated_%s", state.BlockHash[:16])
 		}
@@ -1109,17 +1117,11 @@ func (sm *StateMachine) isValidator() bool {
 }
 
 func (sm *StateMachine) checkProgress() {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	// Check if we're making progress
-	if time.Since(sm.currentState.Timestamp) > 30*time.Second {
-		// Trigger view change if stuck
-		select {
-		case sm.timeoutCh <- struct{}{}:
-		default:
-		}
-	}
+	// NOTE: The SMR-layer view change is disabled. The PBFT consensus engine in
+	// src/consensus/consensus.go handles all view changes authoritatively.
+	// This vestigial check was firing continuously because sm.currentState.Timestamp
+	// was never updated from the real blockchain, causing a cascade of spurious view
+	// change messages ("View change triggered, new view: N") that polluted the logs.
 }
 
 func (sm *StateMachine) handleTimeout() {

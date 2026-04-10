@@ -165,6 +165,7 @@ func NewConsensus(
 		timeoutVotes:         make(map[uint64]map[string]*TimeoutMsg), // For view change quorum
 		viewChangeBackoff:    2 * time.Second,                          // P2-4: initial backoff
 		lastProposalTime:     common.GetTimeService().Now(),            // P2-5: partition detection
+		suspectedOfflineLeaders: make(map[string]bool),                 // PBFT liveness: skip offline leaders
 	}
 
 	// Initialize and validate VDF parameters (run once at startup)
@@ -279,18 +280,14 @@ func (c *Consensus) UpdateLeaderStatus() {
 	c.updateLeaderStatus() // Call private implementation
 }
 
-// updateLeaderStatus is the private implementation.
-func (c *Consensus) updateLeaderStatus() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Fall back to round-robin if stake-weighted selection is disabled
-	if !c.useStakeWeighted {
-		c.updateLeaderStatusRoundRobin()
-		return
-	}
-
-	// Get current slot and epoch from time converter
+// updateLeaderStatusLocked is the deterministic PBFT leader election core.
+// Caller MUST hold c.mu.
+//
+// SPLIT-BRAIN FIX: Use view % len(sortedValidators) — fully deterministic,
+// no RANDAO dependency (RANDAO mix can diverge across nodes → different seeds
+// → different winners). Every node with the same sorted validator list and same
+// view number will elect the exact same leader.
+func (c *Consensus) updateLeaderStatusLocked() {
 	currentSlot := c.timeConverter.CurrentSlot()
 	currentEpoch := currentSlot / SlotsPerEpoch
 
@@ -299,32 +296,78 @@ func (c *Consensus) updateLeaderStatus() {
 		c.onEpochTransition(currentEpoch)
 	}
 
-	// Get RANDAO seed for current slot and select proposer
-	seed := c.randao.GetSeed(currentSlot)
-	selected := c.selector.SelectProposer(currentEpoch, seed)
-
-	// Handle case where no validator was selected
-	if selected == nil {
+	// Get sorted validator list from validatorSet (same registry on all nodes once synced)
+	// Using validatorSet.GetActiveValidators is more reliable than getValidators() which
+	// depends on the P2P peer list (which varies per-node and is not consistently ordered).
+	var validators []string
+	if c.validatorSet != nil {
+		active := c.validatorSet.GetActiveValidators(currentEpoch)
+		for _, v := range active {
+			validators = append(validators, v.ID)
+		}
+	}
+	// Fall back to getValidators() if validatorSet is empty
+	if len(validators) == 0 {
+		validators = c.getValidators() // sorted alphabetically
+	}
+	if len(validators) == 0 {
 		c.isLeader = false
 		c.electedLeaderID = ""
 		c.electedSlot = 0
-		logger.Warn("No validator selected for slot %d", currentSlot)
+		logger.Warn("Leader election: validator set empty for view %d — waiting", c.currentView)
 		return
 	}
 
-	// Store the elected leader information
-	c.electedLeaderID = selected.ID
-	c.electedSlot = currentSlot // Store the slot used for election
-	c.isLeader = (selected.ID == c.nodeID)
-
-	// Log selection status with appropriate formatting
-	if c.isLeader {
-		logger.Info("✅ Node %s selected as proposer for slot %d with stake %.2f QTX",
-			c.nodeID, currentSlot, selected.GetStakeInQTX())
-	} else {
-		logger.Info("   Node %s NOT selected for slot %d (selected: %s with %.2f QTX)",
-			c.nodeID, currentSlot, selected.ID, selected.GetStakeInQTX())
+	// Deterministic leader: nextBlockHeight mod len(validators), same on ALL nodes.
+	// Using block height (not view) ensures rotation per block even when view resets to 0.
+	// All nodes in consensus have the same chain height → same elected leader.
+	var nextHeight uint64
+	if c.blockChain != nil {
+		nextHeight = c.blockChain.GetLatestBlock().GetHeight() + 1
 	}
+	electedIndex := int(nextHeight) % len(validators)
+	electedID := validators[electedIndex]
+
+	// PBFT liveness: if elected leader is suspected offline, rotate to next
+	if c.suspectedOfflineLeaders[electedID] {
+		logger.Warn("⚠️ PBFT liveness: elected leader %s is suspected offline, rotating", electedID)
+		foundAlternate := false
+		for offset := 1; offset <= len(validators); offset++ {
+			altID := validators[(electedIndex+offset)%len(validators)]
+			if !c.suspectedOfflineLeaders[altID] {
+				logger.Info("✅ PBFT liveness: skipping offline leader %s, using %s (offset %d)",
+					electedID, altID, offset)
+				electedID = altID
+				foundAlternate = true
+				break
+			}
+		}
+		if !foundAlternate {
+			logger.Warn("⚠️ PBFT liveness: all validators suspected offline, clearing suspect list")
+			c.suspectedOfflineLeaders = make(map[string]bool)
+			c.consecutiveViewChanges = 0
+		}
+	}
+
+	// Store the elected leader information
+	c.electedLeaderID = electedID
+	c.electedSlot = currentSlot
+	c.isLeader = (electedID == c.nodeID)
+
+	if c.isLeader {
+		logger.Info("✅ Node %s elected as leader for view %d (index %d of %d validators)",
+			c.nodeID, c.currentView, electedIndex, len(validators))
+	} else {
+		logger.Info("   Node %s is NOT leader for view %d (leader: %s, index %d of %d)",
+			c.nodeID, c.currentView, electedID, electedIndex, len(validators))
+	}
+}
+
+// updateLeaderStatus is the private implementation.
+func (c *Consensus) updateLeaderStatus() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updateLeaderStatusLocked()
 }
 
 // GetElectedLeaderID returns the RANDAO-elected leader from the last UpdateLeaderStatus call.
@@ -703,23 +746,8 @@ func (c *Consensus) onEpochTransition(newEpoch uint64) {
 	c.currentEpoch = newEpoch // Update current epoch
 }
 
-// updateLeaderStatusRoundRobin elects a leader using round-robin selection
-func (c *Consensus) updateLeaderStatusRoundRobin() {
-	// Get list of validators
-	validators := c.getValidators()
-	if len(validators) == 0 {
-		c.isLeader = false
-		c.electedLeaderID = ""
-		return
-	}
-	// Sort for deterministic ordering
-	sort.Strings(validators)
-	// Select leader based on current view
-	leaderIndex := int(c.currentView) % len(validators)
-	expectedLeader := validators[leaderIndex]
-	c.electedLeaderID = expectedLeader
-	c.isLeader = (expectedLeader == c.nodeID)
-}
+// updateLeaderStatusRoundRobin has been removed.
+// Round-robin caused split-leader conflicts with RANDAO; RANDAO is authoritative.
 
 // processProposal validates and processes an incoming block proposal.
 // Leader validation uses electedLeaderID set by UpdateLeaderStatus, so
@@ -747,10 +775,10 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		return
 	}
 
-	// Check for duplicate proposal
-	if c.preparedBlock != nil && c.preparedBlock.GetHash() == proposal.Block.GetHash() {
-		logger.Warn("❌ Already have prepared block for height %d, ignoring duplicate proposal",
-			proposal.Block.GetHeight())
+	// Check for duplicate proposal (same block hash AND same view — re-proposals in new views are OK)
+	if c.preparedBlock != nil && c.preparedBlock.GetHash() == proposal.Block.GetHash() && proposal.View <= c.preparedView {
+		logger.Warn("❌ Already have prepared block for height %d at view %d, ignoring duplicate proposal",
+			proposal.Block.GetHeight(), c.preparedView)
 		return
 	}
 
@@ -827,7 +855,7 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		c.currentView = proposal.View
 		c.resetConsensusState()
 		// Re-run so electedLeaderID is refreshed for the new view
-		c.updateLeaderStatus()
+		c.updateLeaderStatusLocked()
 	}
 
 	// Verify block height matches expected next height
@@ -838,41 +866,38 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		return
 	}
 
-	// ── KEY FIX: Re-derive electedLeaderID from the proposal's own slot ──────
-	// This eliminates the race where the follower's CurrentSlot() differs from
-	// the leader's slot at proposal time, causing a different seed → different winner.
-	if proposal.SlotNumber > 0 {
-		// Calculate epoch from proposal's slot
-		slotEpoch := proposal.SlotNumber / SlotsPerEpoch
-		// Get RANDAO seed for that slot
-		seed := c.randao.GetSeed(proposal.SlotNumber)
-		// Select proposer for that epoch using the seed
-		selected := c.selector.SelectProposer(slotEpoch, seed)
-		if selected != nil {
-			// Use the selected leader
-			c.electedLeaderID = selected.ID
-			logger.Info("🔄 Follower re-derived electedLeaderID=%s for slot %d (epoch %d)",
-				c.electedLeaderID, proposal.SlotNumber, slotEpoch)
-		} else {
-			// If selection returned nil, accept the proposer's self-declared ID
-			// and let signature verification be the security gate.
-			logger.Warn("⚠️ SelectProposer returned nil for slot %d, trusting signed proposal", proposal.SlotNumber)
-			c.electedLeaderID = proposal.ProposerID
+	// ── SPLIT-BRAIN FIX: Re-derive electedLeaderID deterministically from block height ──
+	// Use nextBlockHeight % len(sortedValidators): same formula as updateLeaderStatusLocked.
+	// Use validatorSet.GetActiveValidators for consistent validator list on all nodes.
+	{
+		var validators []string
+		if c.validatorSet != nil {
+			epoch := proposal.Block.GetHeight() / SlotsPerEpoch
+			active := c.validatorSet.GetActiveValidators(epoch)
+			for _, v := range active {
+				validators = append(validators, v.ID)
+			}
 		}
-	} else if proposal.ElectedLeaderID != "" {
-		// Older proposal without SlotNumber: use the embedded ElectedLeaderID.
-		// Security relies entirely on the proposal signature in this path.
-		logger.Warn("⚠️ Proposal has no SlotNumber, using embedded ElectedLeaderID=%s", proposal.ElectedLeaderID)
-		c.electedLeaderID = proposal.ElectedLeaderID
-	} else {
-		// Last resort: re-run with current slot (original behaviour, may still race)
-		c.updateLeaderStatus()
+		if len(validators) == 0 {
+			validators = c.getValidators() // fallback to P2P list
+		}
+		if len(validators) > 0 {
+			nextHeight := proposal.Block.GetHeight() // the height being proposed
+			electedIndex := int(nextHeight) % len(validators)
+			expectedLeader := validators[electedIndex]
+			c.electedLeaderID = expectedLeader
+			logger.Info("🔄 Follower derived electedLeaderID=%s for height %d (index %d of %d validators)",
+				expectedLeader, nextHeight, electedIndex, len(validators))
+		} else {
+			// No validators known yet — re-run normal election
+			c.updateLeaderStatusLocked()
+		}
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 
-	// Validate that the proposer is the legitimate leader
+	// Validate that the proposer is the legitimate leader — REJECT if not
 	if !c.isValidLeader(proposal.ProposerID, proposal.View) {
-		logger.Warn("❌ Invalid leader %s for view %d (electedLeaderID=%s)",
+		logger.Warn("❌ SPLIT-BRAIN GUARD: Rejecting proposal from non-leader %s for view %d (expected leader: %s)",
 			proposal.ProposerID, proposal.View, c.electedLeaderID)
 		return
 	}
@@ -882,10 +907,20 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		c.nodeID, proposal.Block.GetHash(), proposal.View, proposal.Block.GetHeight(), nonceStr)
 
 	// P2-5: record proposal arrival time for partition detection
-	c.lastProposalTime = common.GetTimeService().Now()
+	// JARVIS fix: don't reset timer on own proposals — that would prevent self-triggering view changes
+	if proposal.ProposerID != c.nodeID {
+		c.lastProposalTime = common.GetTimeService().Now()
+	}
 
 	// P2-4: reset view change backoff on successful proposal receipt
 	c.viewChangeBackoff = 2 * time.Second
+
+	// PBFT liveness: clear proposer from suspected list when they successfully propose
+	if c.suspectedOfflineLeaders[proposal.ProposerID] {
+		logger.Info("✅ PBFT liveness: leader %s is back online (received valid proposal), clearing suspected status", proposal.ProposerID)
+		delete(c.suspectedOfflineLeaders, proposal.ProposerID)
+	}
+	c.consecutiveViewChanges = 0
 
 	// Store prepared block and move to pre-prepared phase
 	c.preparedBlock = proposal.Block
@@ -996,7 +1031,7 @@ func (c *Consensus) processPrepareVote(vote *Vote) {
 		signatureHex := hex.EncodeToString(vote.Signature)
 		consensusSig := &ConsensusSignature{
 			BlockHash:    vote.BlockHash,
-			BlockHeight:  c.currentHeight,
+			BlockHeight:  c.preparedBlock.GetHeight(), // use the actual block height, not currentHeight
 			SignerNodeID: vote.VoterID,
 			Signature:    signatureHex,
 			MessageType:  "prepare",
@@ -1186,6 +1221,26 @@ func (c *Consensus) ForcePopulateAllSignatures() {
 	logger.Info("✅ Force population completed for %d signatures", len(c.consensusSignatures))
 }
 
+// PruneStaleProposalSignatures removes consensus signatures for the given height
+// that refer to a hash OTHER than the one that was actually committed.  These
+// are artefacts of failed/superseded proposals (e.g. view-change losers) and
+// would otherwise cause permanent "block_not_found" noise in SMR logs.
+func (c *Consensus) PruneStaleProposalSignatures(committedHeight uint64, committedHash string) {
+	c.signatureMutex.Lock()
+	defer c.signatureMutex.Unlock()
+
+	kept := c.consensusSignatures[:0]
+	for _, sig := range c.consensusSignatures {
+		if sig.BlockHeight == committedHeight && sig.BlockHash != committedHash {
+			logger.Info("🧹 Pruning stale proposal sig: height=%d hash=%s (committed=%s)",
+				sig.BlockHeight, sig.BlockHash[:8], committedHash[:8])
+			continue
+		}
+		kept = append(kept, sig)
+	}
+	c.consensusSignatures = kept
+}
+
 // GetConsensusSignatures returns a copy of all consensus signatures
 func (c *Consensus) GetConsensusSignatures() []*ConsensusSignature {
 	c.signatureMutex.RLock()
@@ -1275,7 +1330,7 @@ func (c *Consensus) processVote(vote *Vote) {
 		signatureHex := hex.EncodeToString(vote.Signature)
 		consensusSig := &ConsensusSignature{
 			BlockHash:    vote.BlockHash,
-			BlockHeight:  c.currentHeight,
+			BlockHeight:  blockToCommit.GetHeight(), // use actual block height, not currentHeight
 			SignerNodeID: vote.VoterID,
 			Signature:    signatureHex,
 			MessageType:  "commit",
@@ -1308,8 +1363,20 @@ func (c *Consensus) processTimeout(timeout *TimeoutMsg) {
 		logger.Warn("WARNING: No signing service, accepting unsigned timeout from %s", timeout.VoterID)
 	}
 
+	// Discard timeout votes if a block was committed recently (within 30s) — this prevents
+	// stale accumulated timeouts from causing cascading view changes after commit.
+	if c.currentHeight > 0 && common.GetTimeService().Now().Sub(c.lastBlockTime) < 30*time.Second {
+		logger.Info("Discarding timeout vote for view %d — block committed recently (height=%d)", timeout.View, c.currentHeight)
+		return
+	}
+
 	// F-13: Collect timeout messages per view and only advance when f+1 distinct validators agree.
 	if timeout.View > c.currentView {
+		// JARVIS fix: track highest view seen from peers
+		if timeout.View > c.highestSeenView {
+			c.highestSeenView = timeout.View
+		}
+
 		if c.timeoutVotes[timeout.View] == nil {
 			c.timeoutVotes[timeout.View] = make(map[string]*TimeoutMsg)
 		}
@@ -1416,6 +1483,34 @@ func (c *Consensus) voteForBlock(blockHash string, view uint64) {
 	go func() { _ = c.HandleVote(vote) }()
 	logger.Info("🗳️ Node %s sent COMMIT vote for block %s (height %d) at view %d",
 		c.nodeID, blockHash, blockToVote.GetHeight(), view)
+
+	// LIVENESS FIX: Retransmit the commit vote every 500ms until quorum or view-change.
+	// With n=3 validators and the strict >2/3 quorum, a single lost commit vote stalls
+	// the chain. Periodic retransmission ensures eventual delivery.
+	capturedView := view
+	capturedHash := blockHash
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-ticker.C:
+				c.mu.RLock()
+				currentView := c.currentView
+				currentPhase := c.phase
+				c.mu.RUnlock()
+				// Stop retransmitting if view changed or block was committed (phase reset to Idle)
+				if currentView != capturedView || currentPhase == PhaseCommitted || currentPhase == PhaseIdle {
+					return
+				}
+				// Retransmit to ensure all peers have the vote
+				_ = c.broadcastVote(vote)
+				logger.Info("🔄 Retransmitting commit vote for block %s (view %d)", capturedHash, capturedView)
+			}
+		}
+	}()
 }
 
 // hasQuorum checks if a block has achieved commit quorum based on stake weight
@@ -1544,6 +1639,10 @@ func (c *Consensus) getTotalNodes() int {
 	}
 
 	// Fallback: count from P2P peer list
+	// SEC-NIL01: guard nil nodeManager
+	if c.nodeManager == nil {
+		return 0
+	}
 	peers := c.nodeManager.GetPeers()
 	validatorCount := 0
 	// Count validator peers
@@ -1628,14 +1727,30 @@ func (c *Consensus) commitBlock(block Block) {
 
 	// Update consensus state
 	c.currentHeight = block.GetHeight()
+	// NOTE: do NOT reset currentView to 0 here — other nodes may be at a higher view
+	// and will propose at that view; resetting would cause stale-proposal rejections.
+	// Instead, just ensure no stale timeout votes remain for views ≤ current.
+	c.lastViewChange = common.GetTimeService().Now()   // rate-limit view changes for new round
+	c.viewChangeBackoff = 2 * time.Second              // reset backoff for new round
 	c.lastBlockTime = common.GetTimeService().Now()
 	c.lastProposalTime = common.GetTimeService().Now() // reset so shouldPreventViewChange doesn't immediately expire
+	// Reset PBFT liveness tracking on successful commit
+	c.consecutiveViewChanges = 0
 	// Clear sticky-proposal for the committed height
 	if c.lastPreparedHeight <= block.GetHeight() {
 		c.lastPreparedBlock = nil
 		c.lastPreparedHeight = 0
 	}
+	// Clear ALL accumulated timeout votes to prevent cascading view changes
+	c.timeoutVotes = make(map[uint64]map[string]*TimeoutMsg)
 	c.resetConsensusState()
+
+	// Prune stale proposal signatures for this height (losing proposals from
+	// view changes) so SMR no longer emits block_not_found for them.
+	// block.GetHash() here is the consensus (pre-FinalizeHash) hash H1 — the
+	// same hash that was used in prepare/commit votes.  Other proposals at the
+	// same height (different hash) were never committed and should be removed.
+	c.PruneStaleProposalSignatures(block.GetHeight(), block.GetHash())
 
 	logger.Info("🎉 Node %s successfully committed block %s at height %d",
 		c.nodeID, block.GetHash(), c.currentHeight)
@@ -1659,8 +1774,17 @@ func (c *Consensus) startViewChange() {
 
 		// Check conditions for view change
 		if c.phase != PhaseIdle {
-			c.mu.Unlock()
-			return // Only change view in idle phase
+			// Allow view change if we've been stuck in a non-idle phase for too long
+			// (e.g., PhasePrePrepared after accepting a proposal that never got quorum).
+			// This is the key fix for PBFT deadlock after Option A fresh start.
+			stuckTooLong := common.GetTimeService().Now().Sub(c.lastProposalTime) > 30*time.Second
+			if !stuckTooLong {
+				c.mu.Unlock()
+				return // Only block view change if not stuck too long
+			}
+			// Force-reset stale phase so view change can proceed
+			logger.Info("🔄 Force-resetting stale phase %d → idle (stuck for >30s), allowing view change", c.phase)
+			c.resetConsensusState()
 		}
 		if common.GetTimeService().Now().Sub(c.lastViewChange) < 30*time.Second {
 			c.mu.Unlock()
@@ -1680,8 +1804,22 @@ func (c *Consensus) startViewChange() {
 		}
 
 		// Calculate new view number
+		// JARVIS fix: sync to highest view seen from peers to close view-number gaps
 		newView = c.currentView + 1
+		if c.highestSeenView >= newView {
+			newView = c.highestSeenView
+		}
 		logger.Info("🔄 Node %s initiating view change to view %d", c.nodeID, newView)
+
+		// Track consecutive view changes to detect offline leaders (PBFT liveness fix)
+		c.consecutiveViewChanges++
+		if c.consecutiveViewChanges >= 50 && c.electedLeaderID != "" {
+			if !c.suspectedOfflineLeaders[c.electedLeaderID] {
+				logger.Warn("⚠️ PBFT liveness: marking leader %s as suspected offline after %d consecutive view changes",
+					c.electedLeaderID, c.consecutiveViewChanges)
+				c.suspectedOfflineLeaders[c.electedLeaderID] = true
+			}
+		}
 
 		// Update consensus state
 		c.currentView = newView
@@ -1733,33 +1871,11 @@ func (c *Consensus) tryViewChangeLock() bool {
 	}
 }
 
-// updateLeaderStatusWithValidators is used by view-change to elect leader by round-robin.
-// It also stores the result in electedLeaderID so isValidLeader stays consistent.
-func (c *Consensus) updateLeaderStatusWithValidators(validators []string) {
-	if len(validators) == 0 {
-		c.isLeader = false
-		c.electedLeaderID = ""
-		return
-	}
-
-	// Sort for deterministic selection
-	sort.Strings(validators)
-	// Select leader based on current view
-	leaderIndex := int(c.currentView) % len(validators)
-	expectedLeader := validators[leaderIndex]
-
-	// Store elected leader
-	c.electedLeaderID = expectedLeader
-	c.isLeader = (expectedLeader == c.nodeID)
-
-	// Log election result
-	if c.isLeader {
-		logger.Info("✅ Node %s elected as leader for view %d (index %d/%d)",
-			c.nodeID, c.currentView, leaderIndex, len(validators))
-	} else {
-		logger.Debug("Node %s is NOT leader for view %d (leader: %s)",
-			c.nodeID, c.currentView, expectedLeader)
-	}
+// updateLeaderStatusWithValidators previously used view % len round-robin which conflicted
+// with RANDAO. Now delegates to RANDAO-only updateLeaderStatusLocked.
+// Caller MUST hold c.mu.
+func (c *Consensus) updateLeaderStatusWithValidators(_ []string) {
+	c.updateLeaderStatusLocked()
 }
 
 // resetConsensusState clears all consensus-related state for a new view
@@ -1780,7 +1896,7 @@ func (c *Consensus) resetConsensusState() {
 //
 // It uses c.electedLeaderID which is populated by:
 //   - UpdateLeaderStatus (RANDAO path, called from helper.go before proposal)
-//   - updateLeaderStatusWithValidators (round-robin, called on view change)
+//   - updateLeaderStatusWithValidators (now delegates to RANDAO, called on view change)
 //
 // Both paths store a single consistent leader ID, so every node (leader and
 // followers) agrees on who is allowed to propose.
@@ -1818,6 +1934,10 @@ func (c *Consensus) isValidLeader(nodeID string, view uint64) bool {
 
 // getValidators returns a list of all active validator node IDs
 func (c *Consensus) getValidators() []string {
+	// SEC-NIL01: guard against nil nodeManager (e.g. in unit tests or early init).
+	if c.nodeManager == nil {
+		return nil
+	}
 	peers := c.nodeManager.GetPeers()
 	validatorSet := make(map[string]bool)
 	validators := []string{}

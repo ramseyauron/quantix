@@ -24,6 +24,7 @@
 package security
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -147,9 +148,15 @@ func DecodeSecureMessage(data []byte, enc *EncryptionKey) (*Message, error) {
 		return nil, err
 	}
 
-	// Parse plaintext JSON into Message struct
+	// Parse plaintext JSON into Message struct.
+	// FIX-GOSSIP-BIGINT: use UseNumber() so that large integers in transaction
+	// Amount fields are preserved as json.Number strings rather than being
+	// converted to float64 (which loses precision and re-serializes as "1e+21",
+	// breaking big.Int unmarshaling on the gossip_block receive path).
 	var msg Message
-	if err := json.Unmarshal(plaintext, &msg); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(plaintext))
+	dec.UseNumber()
+	if err := dec.Decode(&msg); err != nil {
 		return nil, err
 	}
 

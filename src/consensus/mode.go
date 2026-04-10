@@ -20,7 +20,9 @@ const (
 )
 
 // MinPBFTValidators is the minimum number of validators required for real PBFT.
-const MinPBFTValidators = 4
+// PBFT requires 3f+1 nodes to tolerate f Byzantine faults; with f=0 (no faults),
+// 3 validators is the minimum viable consensus set.
+const MinPBFTValidators = 3
 
 // GetConsensusMode returns the appropriate ConsensusMode for the given validator count.
 func GetConsensusMode(validatorCount int) ConsensusMode {

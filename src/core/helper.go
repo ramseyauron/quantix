@@ -197,6 +197,11 @@ func (bc *Blockchain) AddBlockFromPeer(block *types.Block) error {
 	if block == nil {
 		return fmt.Errorf("AddBlockFromPeer: nil block")
 	}
+	// Serialize to prevent double-commit race: two goroutines receiving the same
+	// height block before either commits would both pass the height check below.
+	bc.addFromPeerMu.Lock()
+	defer bc.addFromPeerMu.Unlock()
+
 	// Check height – skip if we already have this block.
 	latest := bc.GetLatestBlock()
 	if latest != nil && block.GetHeight() <= latest.GetHeight() {
@@ -255,6 +260,22 @@ func (bc *Blockchain) GetStorage() *storage.Storage {
 // GetMempool returns the mempool instance
 func (bc *Blockchain) GetMempool() *pool.Mempool {
 	return bc.mempool
+}
+
+// GetPendingTransactions returns all pending transactions from the mempool.
+func (bc *Blockchain) GetPendingTransactions() []*types.Transaction {
+	if bc.mempool == nil {
+		return nil
+	}
+	return bc.mempool.GetPendingTransactions()
+}
+
+// GetMempoolStats returns mempool statistics.
+func (bc *Blockchain) GetMempoolStats() map[string]interface{} {
+	if bc.mempool == nil {
+		return nil
+	}
+	return bc.mempool.GetStats()
 }
 
 // GetChainParams returns the Quantix blockchain parameters for external recognition

@@ -1860,12 +1860,37 @@ func (bc *Blockchain) CommitBlock(block consensus.Block) error {
 			bc.StatusString(bc.GetStatus()))
 	}
 
+	// JARVIS fix: guard against double-commit at the same height.
+	// If we've already committed a block at this height, skip re-execution
+	// (which would apply rewards twice and corrupt the state root).
+	{
+		bc.lock.RLock()
+		currentLen := len(bc.chain)
+		bc.lock.RUnlock()
+		if currentLen > 0 {
+			bc.lock.RLock()
+			latestHeight := bc.chain[currentLen-1].GetHeight()
+			bc.lock.RUnlock()
+			if typeBlock.GetHeight() <= latestHeight {
+				logger.Warn("⚠️ CommitBlock: skipping duplicate commit for height=%d (already at height=%d)",
+					typeBlock.GetHeight(), latestHeight)
+				return nil
+			}
+		}
+	}
+
 	// Store block in storage
 	// Execute block: apply transactions, mint reward, compute real StateRoot.
 	stateRoot, err := bc.ExecuteBlock(typeBlock)
 	if err != nil {
 		return fmt.Errorf("CommitBlock: execution failed: %w", err)
 	}
+
+	// Capture the consensus hash (the hash nodes voted on) BEFORE we stamp
+	// StateRoot and re-finalize.  After FinalizeHash the hash changes, which
+	// was the root cause of "block_not_found": SMR looked up the old hash and
+	// found nothing because only the new hash was in the index.
+	consensusHash := typeBlock.GetHash()
 
 	// Stamp the real state root into the block header before storage.
 	typeBlock.Header.StateRoot = stateRoot
@@ -1875,6 +1900,14 @@ func (bc *Blockchain) CommitBlock(block consensus.Block) error {
 	// Store block in storage (now with the real StateRoot).
 	if err := bc.storage.StoreBlock(typeBlock); err != nil {
 		return fmt.Errorf("failed to store block: %w", err)
+	}
+
+	// CRITICAL FIX: if the hash changed after FinalizeHash, register the old
+	// (consensus) hash as an alias so lookups by the voted-on hash succeed.
+	newHash := typeBlock.GetHash()
+	if consensusHash != newHash {
+		bc.storage.AddHashAlias(consensusHash, typeBlock)
+		logger.Info("🔗 CommitBlock: aliased consensus hash %s → stored hash %s", consensusHash, newHash)
 	}
 
 	// Update in-memory chain
@@ -2325,6 +2358,16 @@ func (bc *Blockchain) GetBlockByHash(hash string) consensus.Block {
 	// Get block from storage
 	block, err := bc.storage.GetBlockByHash(hash)
 	if err != nil || block == nil {
+		// Height-based fallback: search all stored blocks for matching hash.
+		// This handles the case where FinalizeHash changed the hash after consensus
+		// voted, and the AddHashAlias in-memory alias was lost (e.g. on restart
+		// or at a node that never proposed the block).
+		allBlocks, _ := bc.storage.GetAllBlocks()
+		for _, b := range allBlocks {
+			if b.GetHash() == hash {
+				return NewBlockHelper(b)
+			}
+		}
 		return nil // Block not found
 	}
 	// Wrap in adapter for consensus interface

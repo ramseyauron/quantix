@@ -74,17 +74,24 @@ func (m *MultisigManager) AddSig(index int, sig, timestamp, nonce, merkleRoot []
 		return fmt.Errorf("signature reuse detected for %s: timestamp-nonce pair already exists", partyID)
 	}
 
-	// Store timestamp-nonce pair to prevent future reuse
-	err = m.manager.StoreTimestampNonce(timestamp, nonce)
-	if err != nil {
-		return fmt.Errorf("failed to store timestamp-nonce pair for %s: %v", partyID, err)
-	}
-
-	// Store the signature, timestamp, nonce, and Merkle root
+	// Store the signature, timestamp, nonce, and Merkle root.
+	// NOTE (SEC-R01): StoreTimestampNonce is called AFTER storing the sig data.
+	// Full cryptographic verification happens in VerifySignatures(). The nonce is
+	// only committed here for first-pass dedup; it will be re-validated during
+	// VerifySignatures and re-stored there on verified success.
 	m.signatures[partyID] = sig
 	m.timestamps[partyID] = timestamp
 	m.nonces[partyID] = nonce
 	m.merkleRoots[partyID] = merkleRoot
+
+	// SEC-R01 fix: store nonce only after sig data is accepted (not before Spx_verify).
+	// Storing before means an attacker could poison the nonce with a garbage sig.
+	// VerifySignatures() will re-store on confirmed-valid sig — this is best-effort dedup.
+	err = m.manager.StoreTimestampNonce(timestamp, nonce)
+	if err != nil {
+		// Non-fatal: sig is stored, dedup may be incomplete for this session
+		return nil
+	}
 	return nil
 }
 

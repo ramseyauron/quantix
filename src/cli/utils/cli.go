@@ -133,6 +133,7 @@ func Execute() error {
 
 		// Select the configuration for the specified node index
 		nodeConfig = configs[cfg.nodeIndex]
+		nodeConfig.TotalNodes = cfg.numNodes
 	} else {
 		// Generate configurations programmatically based on flags
 
@@ -191,6 +192,7 @@ func Execute() error {
 
 		// Select the configuration for the specified node index
 		nodeConfig = configs[cfg.nodeIndex]
+		nodeConfig.TotalNodes = cfg.numNodes
 	}
 
 	// Start a single node with the selected configuration

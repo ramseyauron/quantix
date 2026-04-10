@@ -35,6 +35,7 @@ import (
 	nethttp "net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -149,6 +150,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		SeedHTTPPort: nodeConfig.SeedHTTPPort,
 		DevMode:      nodeConfig.DevMode, // FIX-P2P-03
 		ExplicitSeeds: nodeConfig.ExplicitSeeds,
+		TotalNodes:    nodeConfig.TotalNodes,
 	}
 
 	var wg sync.WaitGroup
@@ -259,12 +261,12 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			network.RegisterConsensus(nodeID, cons)
 
 			// Only start the consensus engine when PBFT quorum is reachable.
-			// With < 4 validators, the devnet miner goroutine below handles block
+			// With < TotalNodes validators, the devnet miner goroutine below handles block
 			// production.  Starting the engine anyway causes an endless view-change
 			// loop (view 1 → 2 → 3 …) that holds consensus locks and prevents the
 			// devnet miner from committing blocks.
 			initialValidatorCount := 1 // self is always counted
-			if initialValidatorCount >= 4 {
+			if initialValidatorCount >= nodeConfig.TotalNodes {
 				if err := cons.Start(); err != nil {
 					log.Printf("⚠️  P2-PBFT: consensus.Start failed: %v", err)
 				} else {
@@ -274,7 +276,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			} else {
 				pbftConsensus = cons // keep reference for later activation at 4+ validators
 				log.Printf("⏸️  P2-PBFT: consensus engine created but NOT started for %s — only %d validator(s), need %d for PBFT quorum (devnet miner active)",
-					nodeID, initialValidatorCount, 4)
+					nodeID, initialValidatorCount, nodeConfig.TotalNodes)
 			}
 		}
 	}
@@ -399,7 +401,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			selfURL := "http://" + localHTTPPort + "/validator/register"
 			doPost(selfURL)
 
-			// Poll validator count; when >= 4, sync to consensus validatorSet and signal PBFT ready.
+			// Poll validator count; when >= TotalNodes, sync to consensus validatorSet and signal PBFT ready.
 			// Check the seed's validator list (authoritative) rather than local DB.
 			type validatorResp struct {
 				Count      int `json:"count"`
@@ -451,46 +453,93 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					resp.Body.Close()
 					break
 				}
-				log.Printf("🔍 Validator count: %d / 4", n)
-				if n >= 4 && !pbftReady {
+				expectedN := nodeConfig.TotalNodes
+				if expectedN <= 0 {
+					expectedN = 3
+				}
+				log.Printf("🔍 Validator count: %d / %d", n, expectedN)
+				if n >= expectedN && !pbftReady {
 					pbftReady = true
-					log.Printf("🎉 %s: 4 validators registered — syncing to consensus validatorSet", nodeConfig.Name)
+					log.Printf("🎉 %s: %d validators registered — syncing to consensus validatorSet", nodeConfig.Name, expectedN)
 					// P2-PBFT: sync all registered validators into the consensus validatorSet.
 					cons := pbftConsensus
 					if cons != nil {
 						vs := cons.GetValidatorSet()
 						if vs != nil {
-							for _, vr := range lastValidators {
-								nodeAddr := vr.NodeID
-								if nodeAddr == "" {
-									nodeAddr = vr.NodeAddress
+							// Remove the initial hash-based self-registration (added at startup) before
+							// syncing address-based validators from the registry. This ensures all nodes
+							// have the same deterministic validator set for PBFT leader election.
+							selfHashID := resources[0].P2PServer.LocalNode().ID
+							vs.DeleteValidator(selfHashID)
+							log.Printf("🧹 P2-PBFT: removed hash-based self (%s) before syncing address validators", selfHashID)
+							// Sort deterministically so all peer nodes register validators in the same order.
+								// Consistent ordering ensures RANDAO leader election is deterministic.
+								sort.Slice(lastValidators, func(i, j int) bool {
+									return lastValidators[i].NodeID < lastValidators[j].NodeID
+								})
+								registered := 0
+								for _, vr := range lastValidators {
+									nodeAddr := vr.NodeID
+									if nodeAddr == "" {
+										nodeAddr = vr.NodeAddress
+									}
+									// Skip ghost/unknown validators — they have no real node and
+									// would cause RANDAO to elect an absent leader → endless view-changes.
+									if nodeAddr == "" || nodeAddr == "unknown" || nodeAddr == "Node-unknown" || strings.Contains(nodeAddr, "unknown") {
+										log.Printf("⚠️  P2-PBFT: skipping unknown validator %q — no real node", nodeAddr)
+										continue
+									}
+									// Use node address as validator ID (matches how nodes identify)
+									stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
+									if !ok || stake.Sign() <= 0 {
+										stake = new(big.Int).SetInt64(1000000)
+									}
+									// Convert to QTX units for the validator set
+									stakeQTX := new(big.Int).Div(stake, big.NewInt(1e9)) // rough conversion
+									if stakeQTX.Sign() <= 0 {
+										stakeQTX = big.NewInt(1000)
+									}
+									consNodeID := nodeAddr
+									if !strings.HasPrefix(consNodeID, "Node-") {
+										consNodeID = "Node-" + consNodeID
+									}
+									_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
+									log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", consNodeID, stake.String())
+									registered++
 								}
-								// Use node address as validator ID (matches how nodes identify)
-								stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
-								if !ok || stake.Sign() <= 0 {
-									stake = new(big.Int).SetInt64(1000000)
-								}
-								// Convert to QTX units for the validator set
-								stakeQTX := new(big.Int).Div(stake, big.NewInt(1e9)) // rough conversion
-								if stakeQTX.Sign() <= 0 {
-									stakeQTX = big.NewInt(1000)
-								}
-								consNodeID := nodeAddr
-								if !strings.HasPrefix(consNodeID, "Node-") {
-									consNodeID = "Node-" + consNodeID
-								}
-								_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
-								log.Printf("🔐 P2-PBFT: registered validator %s with stake %s in consensus", consNodeID, stake.String())
-							}
-							log.Printf("✅ P2-PBFT: consensus validatorSet now has %d validators — PBFT active!", n)
+								log.Printf("✅ P2-PBFT: consensus validatorSet now has %d real validators — PBFT active!", registered)
 						}
+					}
+					// Re-sync from seeds before starting PBFT to ensure we have the seed's
+					// solo-mined blocks (if any) so our chain base matches the seed's.
+					for _, seedURL := range seedHTTPs {
+						resp, err2 := nethttp.Get(seedURL + "/blockcount") //nolint:noctx
+						if err2 != nil {
+							continue
+						}
+						var cr struct {
+							Count uint64 `json:"count"`
+						}
+						_ = json.NewDecoder(resp.Body).Decode(&cr)
+						resp.Body.Close()
+						localH := resources[0].Blockchain.GetBlockCount()
+						if cr.Count > localH {
+							log.Printf("🔄 P2-PBFT pre-start sync: seed height=%d local=%d — catching up", cr.Count, localH)
+							if err2 = resources[0].Blockchain.SyncFromPeerHTTP(seedURL); err2 != nil {
+								log.Printf("⚠️  P2-PBFT pre-start sync failed: %v", err2)
+							} else {
+								log.Printf("✅ P2-PBFT pre-start sync complete: now at height %d", resources[0].Blockchain.GetBlockCount())
+							}
+						}
+						break
 					}
 					// Start the consensus engine now that quorum is reachable.
 					if err := cons.Start(); err != nil {
 						log.Printf("⚠️  P2-PBFT: consensus.Start failed at quorum: %v", err)
 					} else {
 						log.Printf("🚀 P2-PBFT: consensus engine started — PBFT quorum reached (%d validators)", n)
-						resources[0].Blockchain.StartLeaderLoop(context.Background())
+						// Start leader loop on THIS node's blockchain
+						go resources[0].Blockchain.StartLeaderLoop(context.Background())
 						log.Printf("🏁 P2-PBFT: leader loop started for peer node")
 					}
 					close(minerStopCh)
@@ -505,6 +554,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 	// and sync them to the consensus validatorSet when quorum is reached.
 	if !nodeConfig.ExplicitSeeds && pbftConsensus != nil {
 		go func() {
+			expectedValidators := nodeConfig.TotalNodes
 			// Seed node: register self in the blockchain DB so peers' poll can see it.
 			time.Sleep(6 * time.Second)
 			selfReg := &core.ValidatorRegistration{
@@ -526,13 +576,25 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			cons := pbftConsensus
 			for range ticker.C {
 				validators, err := resources[0].Blockchain.GetValidators()
-				if err != nil || len(validators) < 4 || pbftReady {
+				if err != nil || len(validators) < expectedValidators || pbftReady {
 					continue
 				}
 				pbftReady = true
-				log.Printf("🎉 Seed node: 4 validators — syncing consensus validatorSet")
+				log.Printf("🎉 Seed node: %d validators — syncing consensus validatorSet", expectedValidators)
 				if vs := cons.GetValidatorSet(); vs != nil {
+					// Remove hash-based self-ID added at startup before syncing address-based validators.
+					selfHashID := resources[0].P2PServer.LocalNode().ID
+					vs.DeleteValidator(selfHashID)
+					log.Printf("🧹 P2-PBFT: seed node removed hash-based self (%s) before syncing", selfHashID)
+					// Sort deterministically so seed node uses same order as peer nodes.
+					sort.Slice(validators, func(i, j int) bool {
+						return validators[i].NodeAddress < validators[j].NodeAddress
+					})
+					registered := 0
 					for _, vr := range validators {
+						if vr.NodeAddress == "" || strings.Contains(vr.NodeAddress, "unknown") {
+							continue
+						}
 						stake, ok := new(big.Int).SetString(vr.StakeAmount, 10)
 						if !ok || stake.Sign() <= 0 {
 							stake = new(big.Int).SetInt64(1000000)
@@ -546,9 +608,16 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 							consNodeID = "Node-" + consNodeID
 						}
 						_ = vs.AddValidator(consNodeID, stakeQTX.Uint64())
+						registered++
 					}
-					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d validators", len(validators))
+					log.Printf("✅ P2-PBFT: seed node consensus validatorSet synced with %d real validators", registered)
 				}
+				// Stop devnet miner so PBFT is the sole block producer.
+				// Running both causes solo-mined blocks with no attestors, breaking reward distribution.
+				close(minerStopCh)
+				log.Printf("🔨→⚖️ Devnet miner stopped on seed node — PBFT is now the sole block producer")
+				// Give peer nodes a moment to re-sync our chain before we start proposing.
+				time.Sleep(8 * time.Second)
 				// Start the consensus engine now that quorum is reachable.
 				if err := cons.Start(); err != nil {
 					log.Printf("⚠️  P2-PBFT: seed node consensus.Start failed at quorum: %v", err)
@@ -557,10 +626,6 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					resources[0].Blockchain.StartLeaderLoop(context.Background())
 					log.Printf("🏁 P2-PBFT: leader loop started for seed node")
 				}
-				// Stop devnet miner so PBFT is the sole block producer.
-				// Running both causes solo-mined blocks with no attestors, breaking reward distribution.
-				close(minerStopCh)
-				log.Printf("🔨→⚖️ Devnet miner stopped on seed node — PBFT is now the sole block producer")
 				return
 			}
 		}()
@@ -586,10 +651,11 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					ticker2 := time.NewTicker(8 * time.Second)
 					defer ticker2.Stop()
 					bc2 := resources[0].Blockchain
+					totalNodes2 := nodeConfig.TotalNodes
 					for range ticker2.C {
-						// Validator-count-aware pause: slow down if peers haven't synced yet
-						if vv, err2 := bc2.GetValidators(); err2 == nil && len(vv) < 4 && bc2.GetBlockCount() > 5 {
-							log.Printf("⏳ Devnet miner pausing — only %d/4 validators registered", len(vv))
+						// Option A: pause at height>1 until all validators registered
+						if vv, err2 := bc2.GetValidators(); err2 == nil && len(vv) < totalNodes2 && bc2.GetBlockCount() > 1 {
+							log.Printf("⏳ Devnet miner pausing — only %d/%d validators registered", len(vv), totalNodes2)
 							time.Sleep(8 * time.Second)
 							continue
 						}
@@ -607,7 +673,8 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
 		bc := resources[0].Blockchain
-		log.Printf("🔨 Devnet miner started for %s — producing blocks every 8s", nodeConfig.Name)
+		totalNodes := nodeConfig.TotalNodes
+		log.Printf("🔨 Devnet miner started for %s — producing blocks every 8s (waiting for %d validators)", nodeConfig.Name, totalNodes)
 		for {
 			select {
 			case <-minerStopCh:
@@ -620,11 +687,18 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 							log.Printf("⚠️  Devnet miner tick panic: %v", r)
 						}
 					}()
-					// Validator-count-aware pause: slow down if peers haven't synced yet
-					if vv, err2 := bc.GetValidators(); err2 == nil && len(vv) < 4 && bc.GetBlockCount() > 5 {
-						log.Printf("⏳ Devnet miner pausing — only %d/4 validators registered", len(vv))
+					// Option A: pause at height>1 until all validators registered
+					if vv, err2 := bc.GetValidators(); err2 == nil && len(vv) < totalNodes && bc.GetBlockCount() > 1 {
+						log.Printf("⏳ Devnet miner pausing — only %d/%d validators registered", len(vv), totalNodes)
 						time.Sleep(8 * time.Second)
 						return
+					}
+					// Double-check: if minerStopCh was closed (PBFT started), abort this tick
+					select {
+					case <-minerStopCh:
+						log.Printf("⛏️  Devnet miner: tick skipped — PBFT already started")
+						return
+					default:
 					}
 					pendingCount := bc.GetPendingTransactionCount()
 					log.Printf("DevnetMineBlock attempt: pending=%d", pendingCount)

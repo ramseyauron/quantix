@@ -58,6 +58,7 @@ type NodeSetupConfig struct {
 	DB           *leveldb.DB // optional: pre-opened LevelDB instance; SetupNodes will open its own if nil
 	DevMode      bool        // FIX-P2P-03: skip DHT, use direct TCP peering
 	ExplicitSeeds bool       // true when peer seeds were explicitly provided (not auto-generated)
+	TotalNodes    int        // total expected validators in devnet (for mining pause guard)
 }
 
 // NodeResources holds the initialized resources for a node.
