@@ -261,12 +261,12 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			network.RegisterConsensus(nodeID, cons)
 
 			// Only start the consensus engine when PBFT quorum is reachable.
-			// With < 4 validators, the devnet miner goroutine below handles block
+			// With < TotalNodes validators, the devnet miner goroutine below handles block
 			// production.  Starting the engine anyway causes an endless view-change
 			// loop (view 1 → 2 → 3 …) that holds consensus locks and prevents the
 			// devnet miner from committing blocks.
 			initialValidatorCount := 1 // self is always counted
-			if initialValidatorCount >= 4 {
+			if initialValidatorCount >= nodeConfig.TotalNodes {
 				if err := cons.Start(); err != nil {
 					log.Printf("⚠️  P2-PBFT: consensus.Start failed: %v", err)
 				} else {
@@ -276,7 +276,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			} else {
 				pbftConsensus = cons // keep reference for later activation at 4+ validators
 				log.Printf("⏸️  P2-PBFT: consensus engine created but NOT started for %s — only %d validator(s), need %d for PBFT quorum (devnet miner active)",
-					nodeID, initialValidatorCount, 4)
+					nodeID, initialValidatorCount, nodeConfig.TotalNodes)
 			}
 		}
 	}
@@ -401,7 +401,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			selfURL := "http://" + localHTTPPort + "/validator/register"
 			doPost(selfURL)
 
-			// Poll validator count; when >= 4, sync to consensus validatorSet and signal PBFT ready.
+			// Poll validator count; when >= TotalNodes, sync to consensus validatorSet and signal PBFT ready.
 			// Check the seed's validator list (authoritative) rather than local DB.
 			type validatorResp struct {
 				Count      int `json:"count"`
@@ -580,7 +580,7 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 					continue
 				}
 				pbftReady = true
-				log.Printf("🎉 Seed node: 4 validators — syncing consensus validatorSet")
+				log.Printf("🎉 Seed node: %d validators — syncing consensus validatorSet", expectedValidators)
 				if vs := cons.GetValidatorSet(); vs != nil {
 					// Remove hash-based self-ID added at startup before syncing address-based validators.
 					selfHashID := resources[0].P2PServer.LocalNode().ID
