@@ -141,7 +141,8 @@ func NewServer(config network.NodePortConfig, blockchain *core.Blockchain, db *l
 	return &Server{
 		localNode:   localNode,                         // Local node information
 		nodeManager: nodeManager,                       // Node tracking manager
-		seedNodes:   config.SeedNodes,                  // Bootstrap seed nodes
+		seedNodes:   config.SeedNodes,                  // Bootstrap seed nodes (UDP discovery)
+		tcpSeeds:    config.SeedNodes,                  // Explicit TCP peers for reconnect loop
 		dht:         dhtInstance,                       // DHT for discovery
 		peerManager: NewPeerManager(nil, bucketSize),   // Peer connection manager
 		sphincsMgr:  nil,                               // SPHINCS+ crypto manager (initialized later)
@@ -192,15 +193,15 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// runReconnectLoop periodically checks that all seed node TCP connections are alive
-// and re-establishes them if they dropped. Runs every 15 seconds.
+// runReconnectLoop periodically checks that all explicit TCP peer connections are alive
+// and re-establishes them if they dropped. Uses tcpSeeds (from -seeds flag), NOT
+// seedNodes which can be overwritten by UDP discovery with wrong ports.
 func (s *Server) runReconnectLoop() {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		for _, seedAddr := range s.seedNodes {
-			// seedAddr is UDP/TCP addr (host:port). Try TCP port directly.
-			transport.EnsureConnected(seedAddr)
+		for _, addr := range s.tcpSeeds {
+			transport.EnsureConnected(addr)
 		}
 	}
 }
