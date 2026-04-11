@@ -1534,7 +1534,7 @@ func (bc *Blockchain) selectTransactionsForBlock(pendingTxs []*types.Transaction
 	var selectedTxs []*types.Transaction // Selected transactions
 	currentSize := uint64(0)             // Current accumulated size
 	txCount := 0                         // Number of transactions selected
-	maxTxCount := 20                     // PBFT stability cap: ≤20 txs per block prevents oversized proposals
+	maxTxCount := 5                      // PBFT stability cap: ≤5 txs per block for maximum stability
 
 	// Calculate overhead for block metadata (header, etc.)
 	// This is an estimate - adjust based on your actual block structure
