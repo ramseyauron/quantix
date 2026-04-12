@@ -39,7 +39,8 @@ import (
 type Server struct {
 	localNode   *network.Node
 	nodeManager *network.NodeManager
-	seedNodes   []string
+	seedNodes   []string  // UDP discovery seeds (may be wrong ports)
+	tcpSeeds    []string  // Explicit TCP seeds from -seeds flag — used for reconnect
 	udpConn     *net.UDPConn
 	messageCh   chan *security.Message
 	verackCh    chan *security.Message // FIX-P2P-GOSSIP2: dedicated channel for verack routing

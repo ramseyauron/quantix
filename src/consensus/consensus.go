@@ -305,6 +305,18 @@ func (c *Consensus) updateLeaderStatusLocked() {
 		for _, v := range active {
 			validators = append(validators, v.ID)
 		}
+		// FIX: After epoch transition, validators may not be registered for the new epoch yet.
+		// Fall back to previous epoch's validators to avoid empty validator set causing chain halt.
+		if len(validators) == 0 && currentEpoch > 0 {
+			prev := c.validatorSet.GetActiveValidators(currentEpoch - 1)
+			for _, v := range prev {
+				validators = append(validators, v.ID)
+			}
+			if len(validators) > 0 {
+				logger.Info("🔄 Epoch %d: using epoch %d validators as fallback (%d validators)",
+					currentEpoch, currentEpoch-1, len(validators))
+			}
+		}
 	}
 	// Fall back to getValidators() if validatorSet is empty
 	if len(validators) == 0 {
@@ -780,6 +792,16 @@ func (c *Consensus) processProposal(proposal *Proposal) {
 		logger.Warn("❌ Already have prepared block for height %d at view %d, ignoring duplicate proposal",
 			proposal.Block.GetHeight(), c.preparedView)
 		return
+	}
+
+	// FIX: If the new proposal is for a HIGHER height than what we have prepared,
+	// the old prepared block is stale (e.g. from a previous round that committed).
+	// Clear it so we can accept and prepare this new proposal.
+	if c.preparedBlock != nil && proposal.Block.GetHeight() > c.preparedBlock.GetHeight() {
+		logger.Info("🔄 Clearing stale preparedBlock (height=%d) for new proposal (height=%d)",
+			c.preparedBlock.GetHeight(), proposal.Block.GetHeight())
+		c.preparedBlock = nil
+		c.preparedView = 0
 	}
 
 	// Verify proposal signature if signing service available.
@@ -1727,9 +1749,12 @@ func (c *Consensus) commitBlock(block Block) {
 
 	// Update consensus state
 	c.currentHeight = block.GetHeight()
-	// NOTE: do NOT reset currentView to 0 here — other nodes may be at a higher view
-	// and will propose at that view; resetting would cause stale-proposal rejections.
-	// Instead, just ensure no stale timeout votes remain for views ≤ current.
+	// FIX: Reset currentView to 1 after each successful block commit so that
+	// the next round always starts fresh at view 1. NOT resetting causes nodes
+	// that went through view changes (view 2, 3, ...) to reject the next leader's
+	// proposal at view 1 as "stale" (proposal.View < c.currentView), permanently
+	// halting the chain under load.
+	c.currentView = 1
 	c.lastViewChange = common.GetTimeService().Now()   // rate-limit view changes for new round
 	c.viewChangeBackoff = 2 * time.Second              // reset backoff for new round
 	c.lastBlockTime = common.GetTimeService().Now()
