@@ -295,7 +295,11 @@ func (pm *PeerManager) performHandshake(node *network.Node) error {
 func (pm *PeerManager) DisconnectPeer(peerID string) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+	return pm.disconnectPeerLocked(peerID)
+}
 
+// disconnectPeerLocked disconnects a peer. Caller must hold pm.mu.
+func (pm *PeerManager) disconnectPeerLocked(peerID string) error {
 	// Check if peer exists
 	peer, exists := pm.peers[peerID]
 	if !exists {
@@ -321,7 +325,12 @@ func (pm *PeerManager) DisconnectPeer(peerID string) error {
 func (pm *PeerManager) BanPeer(peerID string, duration time.Duration) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+	return pm.banPeerLocked(peerID, duration)
+}
 
+// banPeerLocked bans a peer. Caller must hold pm.mu.
+// SEC-P2P01: avoids lock re-acquisition deadlock when called from UpdatePeerScore.
+func (pm *PeerManager) banPeerLocked(peerID string, duration time.Duration) error {
 	// Check if peer exists
 	if _, exists := pm.peers[peerID]; !exists {
 		return fmt.Errorf("peer %s not found", peerID)
@@ -330,11 +339,11 @@ func (pm *PeerManager) BanPeer(peerID string, duration time.Duration) error {
 	// Set ban expiry time
 	pm.bans[peerID] = time.Now().Add(duration)
 
-	// Disconnect the peer
-	return pm.DisconnectPeer(peerID)
+	// Disconnect the peer (lock already held)
+	return pm.disconnectPeerLocked(peerID)
 }
 
-// UpdatePeerScore adjusts a peer’s score based on behavior.
+// UpdatePeerScore adjusts a peer's score based on behavior.
 // Implements a reputation system to track peer reliability and trustworthiness.
 // Low scores can lead to automatic bans, high scores improve peer selection.
 func (pm *PeerManager) UpdatePeerScore(peerID string, delta int) {
@@ -352,8 +361,8 @@ func (pm *PeerManager) UpdatePeerScore(peerID string, delta int) {
 	// Enforce score boundaries and handle low scores
 	if pm.scores[peerID] < 0 {
 		pm.scores[peerID] = 0
-		// Automatically ban peers with persistent low scores
-		pm.BanPeer(peerID, 1*time.Hour)
+		// SEC-P2P01: use locked variant to avoid deadlock (already holding pm.mu)
+		pm.banPeerLocked(peerID, 1*time.Hour)
 	} else if pm.scores[peerID] > 100 {
 		pm.scores[peerID] = 100 // Cap maximum score
 	}
