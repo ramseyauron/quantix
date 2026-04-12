@@ -305,6 +305,18 @@ func (c *Consensus) updateLeaderStatusLocked() {
 		for _, v := range active {
 			validators = append(validators, v.ID)
 		}
+		// FIX: After epoch transition, validators may not be registered for the new epoch yet.
+		// Fall back to previous epoch's validators to avoid empty validator set causing chain halt.
+		if len(validators) == 0 && currentEpoch > 0 {
+			prev := c.validatorSet.GetActiveValidators(currentEpoch - 1)
+			for _, v := range prev {
+				validators = append(validators, v.ID)
+			}
+			if len(validators) > 0 {
+				logger.Info("🔄 Epoch %d: using epoch %d validators as fallback (%d validators)",
+					currentEpoch, currentEpoch-1, len(validators))
+			}
+		}
 	}
 	// Fall back to getValidators() if validatorSet is empty
 	if len(validators) == 0 {
