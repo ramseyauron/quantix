@@ -301,20 +301,19 @@ func (c *Consensus) updateLeaderStatusLocked() {
 	// depends on the P2P peer list (which varies per-node and is not consistently ordered).
 	var validators []string
 	if c.validatorSet != nil {
-		active := c.validatorSet.GetActiveValidators(currentEpoch)
-		for _, v := range active {
-			validators = append(validators, v.ID)
-		}
-		// FIX: After epoch transition, validators may not be registered for the new epoch yet.
-		// Fall back to previous epoch's validators to avoid empty validator set causing chain halt.
-		if len(validators) == 0 && currentEpoch > 0 {
-			prev := c.validatorSet.GetActiveValidators(currentEpoch - 1)
-			for _, v := range prev {
+		// Try current epoch first, then walk back through all previous epochs.
+		// This ensures leader election never fails due to empty epoch validator sets.
+		for ep := int(currentEpoch); ep >= 0; ep-- {
+			active := c.validatorSet.GetActiveValidators(uint64(ep))
+			for _, v := range active {
 				validators = append(validators, v.ID)
 			}
 			if len(validators) > 0 {
-				logger.Info("🔄 Epoch %d: using epoch %d validators as fallback (%d validators)",
-					currentEpoch, currentEpoch-1, len(validators))
+				if uint64(ep) < currentEpoch {
+					logger.Info("🔄 Epoch %d: using epoch %d validators as fallback (%d validators)",
+						currentEpoch, ep, len(validators))
+				}
+				break
 			}
 		}
 	}
