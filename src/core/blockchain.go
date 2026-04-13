@@ -1894,8 +1894,11 @@ func (bc *Blockchain) CommitBlock(block consensus.Block) error {
 
 	// Stamp the real state root into the block header before storage.
 	typeBlock.Header.StateRoot = stateRoot
-	// Re-finalize hash because StateRoot is an input to the block hash.
-	typeBlock.FinalizeHash()
+	// NOTE: Do NOT call FinalizeHash() here. StateRoot was removed from the block
+	// hash calculation (GenerateBlockHash). Calling FinalizeHash() would recalculate
+	// TxsRoot and other fields, potentially producing a different hash than the one
+	// all validators voted on in PBFT. The consensus hash must be preserved exactly.
+	// (Old comment "Re-finalize hash because StateRoot is input to block hash" is stale.)
 
 	// Store block in storage (now with the real StateRoot).
 	if err := bc.storage.StoreBlock(typeBlock); err != nil {

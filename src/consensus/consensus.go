@@ -1242,24 +1242,42 @@ func (c *Consensus) ForcePopulateAllSignatures() {
 	logger.Info("✅ Force population completed for %d signatures", len(c.consensusSignatures))
 }
 
-// PruneStaleProposalSignatures removes consensus signatures for the given height
-// that refer to a hash OTHER than the one that was actually committed.  These
-// are artefacts of failed/superseded proposals (e.g. view-change losers) and
-// would otherwise cause permanent "block_not_found" noise in SMR logs.
+// PruneStaleProposalSignatures removes consensus signatures that are no longer needed:
+//  1. Signatures for the same height with a DIFFERENT hash (failed view-change proposals)
+//  2. Signatures for heights strictly less than (committedHeight - keepWindow) — these
+//     are for already-committed blocks and do not need to be retained in memory.
+//
+// keepWindow = 5 blocks so the explorer/SMR still has recent data; anything older is pruned.
 func (c *Consensus) PruneStaleProposalSignatures(committedHeight uint64, committedHash string) {
 	c.signatureMutex.Lock()
 	defer c.signatureMutex.Unlock()
 
+	const keepWindow = 5
+	var pruneBelow uint64
+	if committedHeight > keepWindow {
+		pruneBelow = committedHeight - keepWindow
+	}
+
+	prunedStale, prunedOld := 0, 0
 	kept := c.consensusSignatures[:0]
 	for _, sig := range c.consensusSignatures {
+		// Drop stale (losing) proposals at the committed height
 		if sig.BlockHeight == committedHeight && sig.BlockHash != committedHash {
-			logger.Info("🧹 Pruning stale proposal sig: height=%d hash=%s (committed=%s)",
-				sig.BlockHeight, sig.BlockHash[:8], committedHash[:8])
+			prunedStale++
+			continue
+		}
+		// Drop signatures for old committed blocks (height too far behind)
+		if sig.BlockHeight < pruneBelow {
+			prunedOld++
 			continue
 		}
 		kept = append(kept, sig)
 	}
 	c.consensusSignatures = kept
+	if prunedStale > 0 || prunedOld > 0 {
+		logger.Info("🧹 Pruned signatures: %d stale + %d old → %d remaining",
+			prunedStale, prunedOld, len(c.consensusSignatures))
+	}
 }
 
 // GetConsensusSignatures returns a copy of all consensus signatures
