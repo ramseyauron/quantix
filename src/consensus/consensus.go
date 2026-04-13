@@ -1644,12 +1644,28 @@ func (c *Consensus) calculateQuorumSize(totalNodes int) int {
 	return quorumSize
 }
 
+// SetConfiguredTotalNodes stores the expected validator count from the -nodes CLI flag.
+// This must be called before PBFT activation so all nodes use the same denominator
+// for deterministic leader election (nextHeight % N), preventing split-brain.
+func (c *Consensus) SetConfiguredTotalNodes(n int) {
+	c.mu.Lock()
+	c.configuredTotalNodes = n
+	c.mu.Unlock()
+	logger.Info("✅ Consensus: configuredTotalNodes set to %d", n)
+}
+
 // getTotalNodes returns the total number of active validator nodes.
-// FIX-PBFT-DEADLOCK: prefer validatorSet count (populated from blockchain validator
-// registry at PBFT activation) over P2P peer list which may be empty because
-// network.NodeManager.AddPeer requires IP/Port fields that TCP-only nodes lack.
+// FIX-PBFT-DEADLOCK: prefer configuredTotalNodes (from -nodes CLI flag) as the
+// authoritative count — this is the only value all nodes agree on before all
+// validators have fully registered. Falling back to validatorSet or P2P peer list
+// can give different counts on different nodes, causing split-brain leader election.
 func (c *Consensus) getTotalNodes() int {
-	// Primary: count from validatorSet (authoritative once PBFT is active)
+	// Primary: use the configured total from the -nodes flag (authoritative, same on all nodes)
+	if c.configuredTotalNodes >= MinPBFTValidators {
+		return c.configuredTotalNodes
+	}
+
+	// Secondary: validatorSet count (populated from blockchain validator registry)
 	if c.validatorSet != nil {
 		c.validatorSet.mu.RLock()
 		vsCount := len(c.validatorSet.validators)

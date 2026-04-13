@@ -247,6 +247,13 @@ func StartSingleNodeInternal(nodeConfig network.NodePortConfig, dataDir string) 
 			// Production security is handled at the network/transport layer (Kyber768 handshake).
 			cons.SetDevMode(true)
 
+			// Wire the -nodes count so all nodes use the same denominator for
+			// leader election (nextHeight % N). Without this, nodes with different
+			// peer lists can elect different leaders → split-brain PBFT halt.
+			if nodeConfig.TotalNodes > 0 {
+				cons.SetConfiguredTotalNodes(nodeConfig.TotalNodes)
+			}
+
 			// Add self as validator with minimum stake.
 			if vs := cons.GetValidatorSet(); vs != nil {
 				_ = vs.AddValidator(nodeID, vs.GetMinStakeSPX())

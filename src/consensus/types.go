@@ -306,6 +306,12 @@ type Consensus struct {
 
 	// JARVIS fix: track highest view seen from peers to sync on view change
 	highestSeenView uint64
+
+	// configuredTotalNodes is the expected validator count from the -nodes CLI flag.
+	// This ensures all nodes use the same denominator for leader election (height % N)
+	// even before all validators have registered. Without this, nodes with different
+	// peer lists elect different leaders → split-brain PBFT halt.
+	configuredTotalNodes int
 }
 
 // SigningService handles cryptographic signing for consensus messages
