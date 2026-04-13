@@ -341,7 +341,11 @@ func (b *Block) GenerateBlockHash() []byte {
 	headerData = append(headerData, timestampBytes...)              // Timestamp (8 bytes)
 	headerData = append(headerData, b.Header.ParentHash...)         // Parent hash (32 bytes)
 	headerData = append(headerData, b.Header.TxsRoot...)            // Transactions Merkle root (32 bytes)
-	headerData = append(headerData, b.Header.StateRoot...)          // State Merkle root (32 bytes)
+	// NOTE: StateRoot intentionally excluded from block hash — it is computed
+	// locally per node after transaction execution and is non-deterministic
+	// across nodes. Including it causes different nodes to produce different
+	// hashes for the same consensus block → parent-hash mismatch → chain fork.
+	// StateRoot is stored in the header for reference only, not for consensus.
 	headerData = append(headerData, nonceBytes...)                  // Nonce (as bytes, 8 bytes)
 	headerData = append(headerData, b.Header.Difficulty.Bytes()...) // Difficulty (variable)
 	headerData = append(headerData, b.Header.GasLimit.Bytes()...)   // Gas limit (variable)
