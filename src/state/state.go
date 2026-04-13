@@ -1031,13 +1031,35 @@ func (s *Storage) GetStateDir() string {
 	return s.stateDir
 }
 
+// loadChainStateLocked reads the chain state file without acquiring any lock.
+// Callers MUST hold s.mu (read or write) before calling this.
+// NIL-LOCK-01: This avoids the deadlock where SaveBlockSizeMetrics held mu.Lock()
+// and called LoadCompleteChainState() which tried to acquire mu.RLock().
+func (s *Storage) loadChainStateLocked() (*ChainState, error) {
+	stateFile := filepath.Join(s.stateDir, "chain_state.json")
+	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
+		return nil, fmt.Errorf("chain state file does not exist: %s", stateFile)
+	}
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read chain state file: %w", err)
+	}
+	var chainState ChainState
+	if err := json.Unmarshal(data, &chainState); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal chain state: %w", err)
+	}
+	return &chainState, nil
+}
+
 // SaveBlockSizeMetrics saves block size metrics to the chain state
 func (s *Storage) SaveBlockSizeMetrics(metrics *BlockSizeMetrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Load existing chain state
-	chainState, err := s.LoadCompleteChainState()
+	// Load existing chain state using the lock-free helper (NIL-LOCK-01 fix).
+	// We already hold mu.Lock() — calling LoadCompleteChainState() here would
+	// deadlock because that method acquires mu.RLock().
+	chainState, err := s.loadChainStateLocked()
 	if err != nil {
 		// Create new chain state if it doesn't exist
 		chainState = &ChainState{
